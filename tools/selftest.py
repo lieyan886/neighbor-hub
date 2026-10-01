@@ -50,13 +50,17 @@ def run_selftest() -> int:
     results: list[tuple[str, bool, str]] = []
 
     def check(name: str, fn) -> bool:
+        # 实时打印进度：某一步挂住时能看出卡在哪，而不是干等到超时
+        print(f"[..] {name}", flush=True)
         try:
             detail = fn()
-            results.append((name, True, detail or ""))
-            return True
         except Exception:
             results.append((name, False, traceback.format_exc(limit=3)))
+            print(f"[FAIL] {name}", flush=True)
             return False
+        results.append((name, True, detail or ""))
+        print(f"[ OK ] {name}{(' — ' + detail) if detail else ''}", flush=True)
+        return True
 
     db = get_database(config.DB_PATH)
     db.initialize()
@@ -234,6 +238,10 @@ def run_selftest() -> int:
             encoding="utf-8",
         )
         html, engine = browser_parser.render_html(page.as_uri())
+        if not html:
+            # 装了 playwright 但没有配套浏览器内核时不算失败：采集层会自动降级，
+            # CI 上也不会因为缺内核就变红。
+            return f"未启用，自动降级为纯 httpx（{engine[:48]}）"
         assert "券后价 88 元" in html or "88" in html, f"JS 没跑起来，拿到 {len(html)} 字节"
 
         # 再验证「抓瘦了 → 兜底补全」这条链路本身

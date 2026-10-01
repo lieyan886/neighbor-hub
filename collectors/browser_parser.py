@@ -34,13 +34,18 @@ def available() -> tuple[bool, str]:
     return True, "已就绪"
 
 
-def _find_browser(pw) -> tuple[object | None, str]:
-    """优先用 Chromium，退而用本机 Edge/Chrome 的 channel。"""
+def _find_browser(pw, launch_timeout_ms: int) -> tuple[object | None, str]:
+    """优先用 Chromium，退而用本机 Edge/Chrome 的 channel。
+
+    每次 launch 都必须带 timeout：浏览器二进制缺失时（playwright 版本与
+    ms-playwright 里的内核对不上最常见），不带超时会卡很久才失败。
+    """
     for name in ("chromium", "chrome", "msedge"):
         try:
             if name == "chromium":
-                return pw.chromium.launch(headless=True), "chromium"
-            return pw.chromium.launch(headless=True, channel=name), name
+                return pw.chromium.launch(headless=True, timeout=launch_timeout_ms), "chromium"
+            return pw.chromium.launch(headless=True, channel=name,
+                                      timeout=launch_timeout_ms), name
         except Exception:  # noqa: BLE001 - 换下一个内核
             continue
     return None, ""
@@ -50,10 +55,12 @@ def render_html(
     url: str,
     timeout_ms: int = 25_000,
     progress: Callable[[str], None] | None = None,
+    launch_timeout_ms: int = 15_000,
 ) -> tuple[str, str]:
     """打开页面并等待渲染，返回 (html, 引擎名)。失败时 html 为空串。
 
     :param progress: 可选的进度回调，用于把「启动浏览器 / 加载中」打到界面上。
+    :param launch_timeout_ms: 单个内核的启动上限，三个内核都试一遍也不会拖太久。
     """
     ok, why = available()
     if not ok:
@@ -74,7 +81,7 @@ def render_html(
         try:
             emit("启动浏览器…")
             with sync_playwright() as pw:  # type: ignore[misc]
-                browser, engine = _find_browser(pw)
+                browser, engine = _find_browser(pw, launch_timeout_ms)
                 if browser is None:
                     return "", "没有可用的浏览器内核（chromium/chrome/msedge 都没起来）"
                 try:

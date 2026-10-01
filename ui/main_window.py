@@ -46,7 +46,9 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("邻里圈 · 社群运营工作台")
+        self.setWindowTitle(
+            f"{config.APP_NAME} · {config.APP_TAGLINE}  v{config.APP_VERSION}"
+        )
         cfg = config.load_settings()
         self.resize(int(cfg.get("window_width", 1280)), int(cfg.get("window_height", 820)))
 
@@ -115,6 +117,10 @@ class MainWindow(QMainWindow):
         self.settings_btn.clicked.connect(self._open_settings)
         side_layout.addWidget(self.check_btn)
         side_layout.addWidget(self.settings_btn)
+
+        ver = QLabel(f"v{config.APP_VERSION}")
+        ver.setProperty("role", "muted")
+        side_layout.addWidget(ver)
         root.addWidget(side)
 
         # —— 内容区 ——

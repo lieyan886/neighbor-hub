@@ -9,6 +9,11 @@ import threading
 from pathlib import Path
 from typing import Any
 
+# --- 版本常量 ---------------------------------------------------------------
+APP_NAME = "邻里圈"
+APP_VERSION = "1.1.0"                  # 语义化版本：主.次.修订
+APP_TAGLINE = "社群运营工作台"
+
 # --- 路径常量 ---------------------------------------------------------------
 APP_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = APP_ROOT / "data"

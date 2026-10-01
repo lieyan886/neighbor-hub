@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/lieyan886/neighbor-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/lieyan886/neighbor-hub/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/lieyan886/neighbor-hub/releases/latest)
 
 给小区群主 / 团长用的桌面工具：**采集 → 管理 → 出图 → 发群**，一条流水线搞定社区活动、邻里拼单、周边优惠和羊毛信息的日常运营。
 
@@ -117,3 +118,14 @@ CI（GitHub Actions）在 Windows + Linux 双平台、Python 3.11 / 3.13 四组�
 > 浏览器那条用例默认不跑（慢，且需要 Playwright）。它在本机 pytest 进程内会挂死——
 > 这是 Playwright sync API 与 pytest 的已知冲突，已用最小用例复现，与本项目代码无关，
 > 所以浏览器链路的验证放在 `app.py --selftest` 里。
+
+## 版本记录
+
+版本号定义在 `core/config.py` 的 `APP_VERSION`，主窗口标题、侧边栏底部、exe 文件属性都读它。
+
+| 版本 | 日期 | 变化 |
+|---|---|---|
+| **v1.1.0** | 2026-10-01 | 打包为独立 exe（PyInstaller + 应用图标）；采集接 Playwright 渲染兜底；pytest 20 条用例 + GitHub Actions CI；补充 MIT LICENSE |
+| v1.0 | 2026-10-01 | 首个可用版本：采集 / 管理 / 分发 / 看板四模块，SQLite + PySide6 |
+
+每个版本在 [Releases](https://github.com/lieyan886/neighbor-hub/releases) 都附带打包好的 exe，不想装 Python 直接下那个就行。
