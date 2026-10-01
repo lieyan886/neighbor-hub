@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 本地数据：数据库、配置（含小区名/联系方式）、采集的头图缓存
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/settings.json
+data/covers/
+
+# 运行产出：导出的 Excel 与渲染的卡片（示例卡片除外）
+exports/*.xlsx
+output/*
+!output/示例卡片.png
+
+# 杂项
+*.log
+.DS_Store
+Thumbs.db
+.env
