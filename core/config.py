@@ -31,6 +31,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
     ),
     "auto_download_cover": True,           # 采集时是否把头图存到本地
+    "browser_fallback": True,              # httpx 抓不到时，用 Playwright 渲染再抓（可选依赖）
     "blacklist": [],                       # 标题命中任一关键词则丢弃
     "whitelist": [],                       # 非空时，只保留命中关键词的条目
     # —— 提醒相关 ——

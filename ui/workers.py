@@ -14,6 +14,7 @@ class ScrapeWorker(QThread):
     progress = Signal(int, int, str)      # 当前序号, 总数, 正在抓的 URL
     one_done = Signal(object)             # 单个 ScrapeResult
     finished_all = Signal(list)
+    note = Signal(str)                    # 文字提示（浏览器兜底时的阶段说明）
 
     def __init__(self, urls: list[str], download_cover: bool = True,
                  parent=None) -> None:
@@ -33,7 +34,11 @@ class ScrapeWorker(QThread):
                 break
             self.progress.emit(idx, total, url)
             try:
-                res = scrape_url(url, download_cover=self.download_cover)
+                res = scrape_url(
+                    url,
+                    download_cover=self.download_cover,
+                    progress=self.note.emit,
+                )
             except Exception as exc:  # 单个失败不影响整批
                 res = ScrapeResult(url=url, error=str(exc))
             self.results.append(res)

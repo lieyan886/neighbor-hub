@@ -212,6 +212,39 @@ def run_selftest() -> int:
         win.close()
         return f"主窗口构建并切换四个页面成功：{title}"
 
+    def step_browser() -> str:
+        """用本地 file:// 页面跑一次真 JS 渲染，不依赖外网。
+
+        Playwright 没装时不算失败 —— 本来就是可选依赖，采集层会自动降级。
+        """
+        import tempfile
+        from pathlib import Path
+
+        from collectors import browser_parser
+
+        ok, why = browser_parser.available()
+        if not ok:
+            return f"未启用，自动降级为纯 httpx（{why[:48]}）"
+
+        page = Path(tempfile.mkdtemp()) / "js.html"
+        page.write_text(
+            "<html><body><div id='p'>加载中</div>"
+            "<script>document.getElementById('p').textContent='券后价 88 元';</script>"
+            "</body></html>",
+            encoding="utf-8",
+        )
+        html, engine = browser_parser.render_html(page.as_uri())
+        assert "券后价 88 元" in html or "88" in html, f"JS 没跑起来，拿到 {len(html)} 字节"
+
+        # 再验证「抓瘦了 → 兜底补全」这条链路本身
+        from collectors.link_parser import _fill, _thin, ScrapeResult
+
+        res = ScrapeResult(url=page.as_uri())
+        _fill(res, "<html><head><title>空壳页</title></head></html>", res.url)
+        assert _thin(res), "缺价格时应判定为需要兜底"
+        _fill(res, html, res.url, only_missing=True)
+        return f"浏览器渲染可用（{engine}），兜底补价链路正常"
+
     check("时间/价格解析", step_price_time)
     check("批量文本解析", step_parse)
     check("过滤与入库", step_insert)
@@ -221,6 +254,7 @@ def run_selftest() -> int:
     check("卡片渲染", step_render)
     check("文案生成", step_copy)
     check("对外脱敏", step_privacy)
+    check("浏览器兜底", step_browser)
     check("Excel 导出", step_excel)
     check("统计查询", step_stats)
     check("图表渲染", step_charts)

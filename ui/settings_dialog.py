@@ -60,6 +60,17 @@ class SettingsDialog(QDialog):
         self.timeout_spin = QSpinBox()
         self.timeout_spin.setRange(3, 60)
         self.timeout_spin.setSuffix(" 秒")
+        self.browser_box = QCheckBox("抓不到时用浏览器渲染再抓一次")
+        from collectors import browser_parser
+
+        ok, why = browser_parser.available()
+        self.browser_box.setToolTip(
+            f"Playwright 状态：{why}\n"
+            "遇到淘宝/拼多多这类前端渲染的页面，httpx 只能拿到空壳，"
+            "开真实浏览器把 JS 跑完再解析会准很多，代价是每条慢几秒。\n"
+            "打包版不带浏览器内核，此开关自动失效。"
+        )
+        self.browser_box.setEnabled(ok)
         self.uuid_note = QPushButton("恢复默认设置")
         self.uuid_note.setProperty("variant", "danger")
         self.uuid_note.clicked.connect(self._reset)
@@ -72,6 +83,7 @@ class SettingsDialog(QDialog):
         form.addRow("提醒窗口", self.remind_spin)
         form.addRow("扫描间隔", self.interval_combo)
         form.addRow("", self.cover_box)
+        form.addRow("", self.browser_box)
         form.addRow("抓取超时", self.timeout_spin)
         layout.addLayout(form, 1)
 
@@ -95,6 +107,7 @@ class SettingsDialog(QDialog):
         idx = self.interval_combo.findData(int(c.get("scan_interval_minutes", 30)))
         self.interval_combo.setCurrentIndex(idx if idx >= 0 else 1)
         self.cover_box.setChecked(bool(c.get("auto_download_cover", True)))
+        self.browser_box.setChecked(bool(c.get("browser_fallback", True)))
         self.timeout_spin.setValue(int(c.get("request_timeout", 12)))
 
     def _save(self) -> None:
@@ -107,6 +120,7 @@ class SettingsDialog(QDialog):
             "remind_hours": int(self.remind_spin.value()),
             "scan_interval_minutes": int(self.interval_combo.currentData()),
             "auto_download_cover": self.cover_box.isChecked(),
+            "browser_fallback": self.browser_box.isChecked(),
             "request_timeout": int(self.timeout_spin.value()),
         })
         self.accept()

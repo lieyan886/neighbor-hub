@@ -189,6 +189,8 @@ class CollectPanel(QWidget):
             parent=self,
         )
         self._worker.progress.connect(self._on_progress)
+        if hasattr(self._worker, "note"):
+            self._worker.note.connect(self.status_label.setText)
         self._worker.one_done.connect(self._append_result)
         self._worker.finished_all.connect(self._scrape_done)
         self._worker.start()

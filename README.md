@@ -1,5 +1,8 @@
 # 邻里圈 · 社群运营工作台
 
+[![CI](https://github.com/lieyan886/neighbor-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/lieyan886/neighbor-hub/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 给小区群主 / 团长用的桌面工具：**采集 → 管理 → 出图 → 发群**，一条流水线搞定社区活动、邻里拼单、周边优惠和羊毛信息的日常运营。
 
 居民不用装任何东西——你在桌面上干活，产出的是微信群友好的卡片图和接龙文案。
@@ -17,6 +20,15 @@ python -m venv .venv
 ```
 
 依赖：PySide6 / httpx / Pillow / APScheduler / openpyxl / matplotlib / qrcode，Python 3.10+。
+
+**打包成 exe**（给别人用时不必装 Python）：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe tools\build_exe.py     # 产物 dist\邻里圈\邻里圈.exe
+```
+
+整个 `dist\邻里圈\` 目录拷走即可双击运行，约 190 MB。
 
 ## 四大模块
 
@@ -76,3 +88,32 @@ community-hub/
 
 设置里可配置扫描间隔（15 分钟～2 小时）和提醒窗口（截止前 N 小时）。
 后台定时器会自动把到期条目推进到「即将截止 / 已过期」，并弹窗提醒。
+
+## 采集的两级策略
+
+1. **httpx 直取**（默认）：快，覆盖服务端直出的页面——大部分活动页、公众号推文、什么值得买。
+2. **浏览器兜底**：标题或价格没拿到时，用 Playwright 开真实浏览器把 JS 跑完再解析，
+   覆盖淘宝 / 拼多多 / 美团这类前端渲染页。代价是每条慢几秒，可在设置里关掉。
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install playwright
+.\.venv\Scripts\python.exe -m playwright install chromium
+```
+
+没装 Playwright 时这一级自动跳过，不影响其它功能；打包版不带浏览器内核，同样自动降级。
+
+## 开发与测试
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pytest                  # 20 条用例
+.\.venv\Scripts\python.exe -m pytest -m browser       # 额外 1 条：拉真实浏览器渲染
+.\.venv\Scripts\python.exe app.py --selftest          # 全链路自检（14 项，含浏览器兜底）
+```
+
+测试全程 `QT_QPA_PLATFORM=offscreen`，数据目录重定向到临时目录，不碰真实数据。
+CI（GitHub Actions）在 Windows + Linux 双平台、Python 3.11 / 3.13 四组环境下跑同一套。
+
+> 浏览器那条用例默认不跑（慢，且需要 Playwright）。它在本机 pytest 进程内会挂死——
+> 这是 Playwright sync API 与 pytest 的已知冲突，已用最小用例复现，与本项目代码无关，
+> 所以浏览器链路的验证放在 `app.py --selftest` 里。
