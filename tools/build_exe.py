@@ -102,7 +102,8 @@ def make_zip() -> Path:
     src = ROOT / "dist" / APP_NAME
     if not src.exists():
         raise SystemExit(f"[FAIL] 没有打包产物：{src}")
-    out = ROOT / "dist" / f"{APP_NAME}-v{config.APP_VERSION}-windows-x64.zip"
+    # 文件名用 ASCII：GitHub Release 的附件名带中文会被吞掉（实测上传后只剩后半截）
+    out = ROOT / "dist" / f"neighbor-hub-v{config.APP_VERSION}-windows-x64.zip"
     total = sum(f.stat().st_size for f in src.rglob("*") if f.is_file())
     done = 0
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:

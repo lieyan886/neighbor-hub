@@ -18,6 +18,8 @@ jobs:
     env:
       # offscreen 模式下 Qt 不弹窗，CI 里才能建界面对象
       QT_QPA_PLATFORM: offscreen
+      # Windows 默认 GBK 输出，强制 UTF-8 防止中文打印崩溃
+      PYTHONUTF8: "1"
 
     steps:
       - uses: actions/checkout@v4

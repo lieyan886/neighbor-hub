@@ -14,6 +14,11 @@ from pathlib import Path
 # offscreen 模式下可以创建 Qt 对象而不弹窗，适合 CI / 命令行自检
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+# Windows 控制台默认 GBK，打印中文会 UnicodeEncodeError；强制 UTF-8 保证 CI 可跑
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
