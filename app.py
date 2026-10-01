@@ -19,7 +19,30 @@ def main(argv: list[str] | None = None) -> int:
     if "--selftest" in argv:
         from tools.selftest import run_selftest
 
-        return run_selftest()
+        if sys.stdout is not None:
+            # 源码运行：正常打到控制台
+            return run_selftest()
+
+        # 打包版（--windowed）没有控制台，跑完弹窗展示报告
+        import contextlib
+        import io
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = run_selftest()
+
+        from PySide6.QtWidgets import QApplication, QMessageBox, QTextEdit
+
+        app = QApplication([sys.argv[0]])
+        box = QMessageBox()
+        box.setWindowTitle("邻里圈 · 自检报告")
+        view = QTextEdit()
+        view.setReadOnly(True)
+        view.setPlainText(buf.getvalue())
+        view.setMinimumSize(720, 480)
+        box.layout().addWidget(view)
+        box.exec()
+        return code
 
     from PySide6.QtWidgets import QApplication
 

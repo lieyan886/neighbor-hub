@@ -17,6 +17,11 @@ exports/*.xlsx
 output/*
 !output/示例卡片.png
 
+# 打包产物（190MB，不进版本库；用 tools/build_exe.py 现打）
+dist/
+build/
+*.spec
+
 # 杂项
 *.log
 .DS_Store
