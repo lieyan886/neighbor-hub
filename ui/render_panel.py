@@ -128,6 +128,9 @@ class RenderPanel(QWidget):
         self.items: list[Item] = []
         self.templates: list[CardTemplate] = []
         self._worker: RenderWorker | None = None
+        self._last_paths: list[str] = []
+        self._push_after_render = False   # 一键推群：出完图自动收尾
+        self._pushed: list[Item] = []
         self._build_ui()
         self.refresh_all()
 
@@ -193,6 +196,15 @@ class RenderPanel(QWidget):
         self.render_btn.setProperty("accent", True)
         self.render_btn.clicked.connect(self._render)
         layout.addWidget(self.render_btn)
+
+        # v1.2.0：一键把「文案 + 卡片图 + 分发记录」三件事串起来
+        self.push_btn = QPushButton("一键推群")
+        self.push_btn.setProperty("accent", True)
+        self.push_btn.setToolTip(
+            "一次做完三件事：群公告文案进剪贴板、分享卡片出图存到本地、"
+            "记一条分发记录。然后你在群里直接 Ctrl+V 粘贴就行。")
+        self.push_btn.clicked.connect(self._one_click_push)
+        layout.addWidget(self.push_btn)
 
         self.open_btn = QPushButton("打开输出文件夹")
         self.open_btn.setProperty("variant", "ghost")
@@ -353,6 +365,56 @@ class RenderPanel(QWidget):
             item = item_repo.get(self._item_id_of(p))
         if paths:
             self._last_paths = paths
+        if getattr(self, "_push_after_render", False):
+            self._push_after_render = False
+            self._finish_push(paths)
+
+    # ============================ 一键推群（v1.2.0） ============================
+
+    def _one_click_push(self) -> None:
+        """文案进剪贴板 → 出图 → 记录分发 → 打开文件夹 → 桌面通知。"""
+        picked = self._selected_items()
+        if not picked:
+            warn(self, "没选内容", "先勾选要发群的内容。")
+            return
+        if self._worker and self._worker.isRunning():
+            return
+
+        # 1. 文案先落到剪贴板（同步，快），顺带让用户看见内容
+        self._generate_text("announce")
+        text = self._announce_edit.toPlainText().strip()
+        if text:
+            QApplication.clipboard().setText(text)
+        self._pushed = picked
+
+        # 2. 出图是异步的，结束后在 _finish_push 里收尾
+        self._push_after_render = True
+        self._render()
+
+    def _finish_push(self, paths: list[str]) -> None:
+        picked = getattr(self, "_pushed", []) or []
+        for it in picked:
+            try:
+                publish_repo.add(it.id or 0, "wechat", text="一键推群")
+                item_repo.mark_published(it.id or 0)
+            except Exception:
+                continue
+
+        config.ensure_dirs()
+        try:
+            import os
+
+            os.startfile(str(config.OUTPUT_DIR))  # noqa: S606
+        except Exception:
+            pass
+
+        msg = f"{len(picked)} 条文案已在剪贴板，{len(paths)} 张卡片已出图"
+        self.preview_count.setText(msg + "，去群里粘贴即可")
+        if config.load_settings().get("notify_enabled", True):
+            from core import notifier
+
+            notifier.notify("可以发群了", msg + "（图片文件夹已打开）")
+        self.published.emit()
 
     def _item_id_of(self, path: str) -> int:
         name = Path(path).name

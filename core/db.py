@@ -15,7 +15,7 @@ from typing import Iterator
 from . import config
 from .models import stamp
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS items (
@@ -88,6 +88,23 @@ CREATE TABLE IF NOT EXISTS publish_logs (
     text        TEXT    NOT NULL DEFAULT '',
     created_at  TEXT    NOT NULL DEFAULT ''
 );
+
+-- v1.2.0：监控源（自动盯梢）
+CREATE TABLE IF NOT EXISTS watch_sources (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    url           TEXT    NOT NULL UNIQUE,
+    title         TEXT    NOT NULL DEFAULT '',
+    last_price    REAL,
+    last_deadline TEXT    NOT NULL DEFAULT '',
+    last_hash     TEXT    NOT NULL DEFAULT '',
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    item_id       INTEGER REFERENCES items(id) ON DELETE SET NULL,
+    note          TEXT    NOT NULL DEFAULT '',
+    last_checked  TEXT    NOT NULL DEFAULT '',
+    created_at    TEXT    NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_watch_enabled ON watch_sources(enabled);
 
 CREATE INDEX IF NOT EXISTS idx_logs_item ON publish_logs(item_id);
 """

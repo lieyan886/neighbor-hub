@@ -216,6 +216,7 @@ def run_selftest() -> int:
         win._goto("manage")
         win._goto("render")
         win._goto("stats")
+        win._goto("watch")
         win._refresh_summary()
         title = win.windowTitle()
         win.close()
@@ -258,6 +259,131 @@ def run_selftest() -> int:
         _fill(res, html, res.url, only_missing=True)
         return f"浏览器渲染可用（{engine}），兜底补价链路正常"
 
+    def step_notifier() -> str:
+        """桌面通知：有 Qt 就能力可用，没有就降级，两条路都不能抛异常。"""
+        from core import notifier
+
+        cap = notifier.available()
+        popped = notifier.notify("自检", "这是一条测试通知")
+        # 环境不支持时必须返回 False 而不是抛错，UI 层才有得降级
+        assert popped is False or popped is True, "notify 返回值不合法"
+        return ("QSystemTrayIcon 可用，通知已发出" if cap
+                else "当前环境无托盘支持，调用安全降级（不崩溃）")
+
+    def step_watch() -> str:
+        """监控源：CRUD + 变化判定（用假抓取器，不发真实网络请求）。"""
+        from core.models import WatchSource, stamp
+        from core.repository import watch_sources as watch_repo
+        from core import watcher
+
+        src = WatchSource(url="https://example.com/deal/1", note="自检监控源",
+                          created_at=stamp())
+        sid = watch_repo.create(src)
+        assert watch_repo.get(sid) is not None, "写进去读不出来"
+        assert watch_repo.get_by_url(src.url) is not None, "按 URL 查不到"
+
+        # 第一次抓 → 应为 first_seen
+        first = watcher.check_source(watch_repo.get(sid))
+        # example.com 在离线环境大概率抓不到，抓不到也算降级正常
+        if first.error:
+            detail = f"抓取失败已安全降级（{first.error[:24]}）"
+        else:
+            assert first.first_seen, "首次抓取应判定为 first_seen"
+            detail = f"首次抓取：{first.summary()[:36]}"
+
+        # 变化判定逻辑本身：改标题应识别出来
+        saved = watch_repo.get(sid)
+        saved.title = "旧标题"
+        saved.last_price = 168.0
+        saved.last_deadline = "2026-10-05 18:00"
+        saved.last_hash = watcher.fingerprint_of("旧标题", "", 168.0, "2026-10-05 18:00")
+        watch_repo.update(saved)
+
+        from collectors import link_parser
+
+        real_scrape = link_parser.scrape_url
+        real_convert = link_parser.convert_to_item
+
+        class _FakeResult:
+            url = src.url
+            title = "新标题"
+            summary = "内容有更新"
+            source = "example"
+            local_cover = ""
+            price = 158.0
+            deadline = "2026-10-06 18:00"
+            tags: list = []
+            error = ""
+
+        def fake_scrape(url, download_cover=True, allow_browser=None, progress=None):
+            return _FakeResult()
+
+        def fake_convert(res, kind=None):
+            return Item(title=res.title, summary=res.summary, url=res.url,
+                        price=res.price, deadline=res.deadline, kind="deal")
+
+        link_parser.scrape_url = fake_scrape          # type: ignore[assignment]
+        link_parser.convert_to_item = fake_convert    # type: ignore[assignment]
+        try:
+            change = watcher.check_source(watch_repo.get(sid))
+            assert change.change_fields, "标题/价格/截止都变了却没识别出来"
+            assert "price" in change.change_fields, "没识别出价格变化"
+            watch_repo.save_snapshot(sid, title=change.title, price=change.price,
+                                     deadline=change.deadline,
+                                     content_hash=watcher.fingerprint_of(
+                                         change.title, "", change.price, change.deadline))
+            after = watch_repo.get(sid)
+            assert after is not None and after.last_price == 158.0, "快照没写回去"
+            detail += f"；改价后识别出 {change.change_fields}"
+        finally:
+            link_parser.scrape_url = real_scrape          # type: ignore[assignment]
+            link_parser.convert_to_item = real_convert    # type: ignore[assignment]
+
+        watch_repo.set_enabled(sid, False)
+        assert watch_repo.get(sid) is not None and not watch_repo.get(sid).enabled
+        watch_repo.delete(sid)
+        assert watch_repo.get(sid) is None, "删除没生效"
+        return detail
+
+    def step_pushkit() -> str:
+        """一键推群：文案 + 卡片 + 分发记录三件套能否串起来（不碰剪贴板）。"""
+        picked = inserted[:2] or item_repo.list_items(limit=2)
+        assert picked, "没有可用条目"
+        cfg = config.load_settings()
+        chunks = [
+            copywriter.build_announcement(
+                it, cfg.get("community_name", ""), cfg.get("operator_name", ""),
+                cfg.get("contact_info", ""))
+            for it in picked
+        ]
+        text = "\n\n".join(chunks)
+        assert all(t.strip() for t in chunks), "公告文案出现了空串"
+        # 剪贴板在 offscreen/CI 下不一定可用，失败了不算致命，只记录文案长度
+        try:
+            app.clipboard().setText(text)
+            copied = True
+        except Exception:
+            copied = False
+
+        template = tpl_repo.all()[0]
+        paths = [render_card(it, template, CardContext(
+            community_name=cfg.get("community_name", ""),
+            operator_name=cfg.get("operator_name", ""),
+            contact_info=cfg.get("contact_info", ""),
+            join_url=it.url), None) for it in picked]
+        assert paths and all(Path(p).exists() for p in paths), "卡片没真正落地"
+
+        from core.repository import publishes as publish_repo
+
+        for it in picked:
+            publish_repo.add(it.id or 0, "wechat", image_path="", text="一键推群")
+            item_repo.mark_published(it.id or 0)
+        logs = publish_repo.recent(limit=20)
+        assert any("一键推群" in (r["text"] or "") for r in logs), "分发记录没写进去"
+        return (f"{len(picked)} 条文案 {len(text)} 字"
+                f"{'（已写入剪贴板）' if copied else '（剪贴板不可用，已跳过）'}"
+                f"，出图 {len(paths)} 张并记录分发")
+
     check("时间/价格解析", step_price_time)
     check("批量文本解析", step_parse)
     check("过滤与入库", step_insert)
@@ -267,6 +393,9 @@ def run_selftest() -> int:
     check("卡片渲染", step_render)
     check("文案生成", step_copy)
     check("对外脱敏", step_privacy)
+    check("桌面通知", step_notifier)
+    check("监控源盯梢", step_watch)
+    check("一键推群包", step_pushkit)
     check("浏览器兜底", step_browser)
     check("Excel 导出", step_excel)
     check("统计查询", step_stats)

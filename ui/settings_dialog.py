@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QLabel,
     QLineEdit,
     QPushButton,
     QSpinBox,
@@ -15,7 +16,7 @@ from PySide6.QtWidgets import (
 
 from core import config, privacy
 from ui import theme
-from ui.widgets import set_placeholder
+from ui.widgets import hint_label, set_placeholder
 
 _INTERVALS = (("15 分钟", 15), ("30 分钟", 30), ("1 小时", 60), ("2 小时", 120))
 
@@ -26,7 +27,7 @@ class SettingsDialog(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("设置")
-        self.resize(520, 500)
+        self.resize(520, 660)
         self.setStyleSheet(theme.QSS)
         self.cfg = dict(config.load_settings())
         self._build_ui()
@@ -109,6 +110,38 @@ class SettingsDialog(QDialog):
         self.cover_box.setChecked(bool(c.get("auto_download_cover", True)))
         self.browser_box.setChecked(bool(c.get("browser_fallback", True)))
         self.timeout_spin.setValue(int(c.get("request_timeout", 12)))
+        self.tray_box.setChecked(bool(c.get("tray_enabled", True)))
+        self.notify_box.setChecked(bool(c.get("notify_enabled", True)))
+        self.minimize_box.setChecked(bool(c.get("minimize_to_tray", True)))
+        self.watch_box.setChecked(bool(c.get("watch_enabled", True)))
+        self.watch_spin.setValue(int(c.get("watch_interval_hours", 6)))
+        self.watch_import_box.setChecked(bool(c.get("watch_auto_import", False)))
+
+        # —— v1.2.0：后台常驻与自动盯梢 ——
+        from core import notifier
+
+        self.tray_box = QCheckBox("显示系统托盘图标")
+        self.tray_box.setToolTip("关掉后软件缩到后台就找不回来了，不建议关。")
+        self.tray_box.setEnabled(notifier.available())
+        self.notify_box = QCheckBox("截止/盯梢有新动静时弹桌面通知")
+        self.minimize_box = QCheckBox("点关闭按钮时缩到托盘而不是退出")
+        self.watch_box = QCheckBox("开启后台自动盯梢")
+        self.watch_spin = QSpinBox()
+        self.watch_spin.setRange(1, 72)
+        self.watch_spin.setSuffix(" 小时扫一轮")
+        self.watch_import_box = QCheckBox("盯梢抓到更新就直接入库")
+        self.watch_import_box.setToolTip(
+            "默认只提醒不动数据。打开后，监控源第一次抓到会自动建一条草稿，"
+            "之后价格/截止有变会同步更新那条内容。"
+        )
+
+        form.addRow(hint_label("以下为 v1.2.0 的后台能力"), QLabel(""))
+        form.addRow("", self.tray_box)
+        form.addRow("", self.notify_box)
+        form.addRow("", self.minimize_box)
+        form.addRow("", self.watch_box)
+        form.addRow("盯梢间隔", self.watch_spin)
+        form.addRow("", self.watch_import_box)
 
     def _save(self) -> None:
         config.save_settings({
@@ -122,6 +155,12 @@ class SettingsDialog(QDialog):
             "auto_download_cover": self.cover_box.isChecked(),
             "browser_fallback": self.browser_box.isChecked(),
             "request_timeout": int(self.timeout_spin.value()),
+            "tray_enabled": self.tray_box.isChecked(),
+            "notify_enabled": self.notify_box.isChecked(),
+            "minimize_to_tray": self.minimize_box.isChecked(),
+            "watch_enabled": self.watch_box.isChecked(),
+            "watch_interval_hours": int(self.watch_spin.value()),
+            "watch_auto_import": self.watch_import_box.isChecked(),
         })
         self.accept()
 

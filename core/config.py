@@ -11,7 +11,7 @@ from typing import Any
 
 # --- 版本常量 ---------------------------------------------------------------
 APP_NAME = "邻里圈"
-APP_VERSION = "1.1.0"                  # 语义化版本：主.次.修订
+APP_VERSION = "1.2.0"                  # 语义化版本：主.次.修订
 APP_TAGLINE = "社群运营工作台"
 
 # --- 路径常量 ---------------------------------------------------------------
@@ -43,6 +43,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "scheduler_enabled": True,
     "remind_hours": 24,                    # 截止前多少小时进入「即将截止」
     "scan_interval_minutes": 30,           # 定时扫描间隔
+    # —— v1.2.0：后台常驻 ——
+    "tray_enabled": True,                  # 是否显示系统托盘图标
+    "notify_enabled": True,                # 是否弹桌面通知（气泡）
+    "minimize_to_tray": True,              # 点关闭按钮时缩到托盘而不是退出
+    # —— v1.2.0：监控源自动盯梢 ——
+    "watch_enabled": True,                 # 定时重抓已保存的监控源
+    "watch_interval_hours": 6,             # 盯梢间隔（小时）
+    "watch_auto_import": False,            # 抓到更新时是否直接入库（默认只通知）
     # —— 渲染相关 ——
     "default_template_id": None,
     "window_width": 1280,

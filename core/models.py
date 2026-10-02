@@ -296,5 +296,59 @@ class PublishLog:
     created_at: str = ""
 
 
+@dataclass
+class WatchSource:
+    """v1.2.0：一个被「盯梢」的页面。
+
+    典型场景是团长常看的团购/拼单链接：标题和档期会变，工具定时重抓一遍，
+    价格、截止时间、标题有变化就推送提醒，省得每天自己去开链接确认。
+    """
+
+    url: str = ""
+    id: int | None = None
+    title: str = ""             # 最近一次抓到的标题
+    last_price: float | None = None
+    last_deadline: str = ""
+    last_hash: str = ""         # 内容指纹，用于判断要不要提醒
+    enabled: bool = True
+    item_id: int | None = None  # 如果已入库，指向那条内容，方便同步更新
+    note: str = ""              # 用户备注，比如「团长的牛肉卷」
+    last_checked: str = ""
+    created_at: str = ""
+
+    @classmethod
+    def from_row(cls, row) -> "WatchSource":
+        return cls(
+            id=row["id"],
+            url=row["url"] or "",
+            title=row["title"] or "",
+            last_price=row["last_price"],
+            last_deadline=row["last_deadline"] or "",
+            last_hash=row["last_hash"] or "",
+            enabled=bool(row["enabled"]),
+            item_id=row["item_id"],
+            note=row["note"] or "",
+            last_checked=row["last_checked"] or "",
+            created_at=row["created_at"] or "",
+        )
+
+    def to_row(self, include_id: bool = False) -> dict:
+        data = {
+            "url": self.url,
+            "title": self.title,
+            "last_price": self.last_price,
+            "last_deadline": self.last_deadline,
+            "last_hash": self.last_hash,
+            "enabled": int(self.enabled),
+            "item_id": self.item_id,
+            "note": self.note,
+            "last_checked": self.last_checked,
+            "created_at": self.created_at,
+        }
+        if include_id and self.id is not None:
+            data["id"] = self.id
+        return data
+
+
 def stamp() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")

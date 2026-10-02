@@ -14,6 +14,7 @@ from .models import (
     STATUS_ARCHIVED,
     STATUS_ENDING,
     STATUS_EXPIRED,
+    WatchSource,
     stamp,
 )
 from . import utils
@@ -406,8 +407,83 @@ class StatsRepository:
         return [(r["kind"], float(r["done"]), float(r["target"])) for r in rows]
 
 
+class WatchRepository:
+    """v1.2.0：监控源 watch_sources 表的增删改查。"""
+
+    def all(self, only_enabled: bool = False) -> list["WatchSource"]:
+        sql = "SELECT * FROM watch_sources"
+        if only_enabled:
+            sql += " WHERE enabled = 1"
+        sql += " ORDER BY created_at DESC, id DESC"
+        return [WatchSource.from_row(r) for r in get_database().query(sql)]
+
+    def get(self, source_id: int) -> "WatchSource | None":
+        row = get_database().query_one(
+            "SELECT * FROM watch_sources WHERE id = ?", (source_id,))
+        return WatchSource.from_row(row) if row else None
+
+    def get_by_url(self, url: str) -> "WatchSource | None":
+        row = get_database().query_one(
+            "SELECT * FROM watch_sources WHERE url = ?", (url,))
+        return WatchSource.from_row(row) if row else None
+
+    def create(self, src: "WatchSource") -> int:
+        row = src.to_row()
+        row["created_at"] = row["created_at"] or _now()
+        keys = ", ".join(row.keys())
+        marks = ", ".join(f":{k}" for k in row)
+        cur = get_database().execute(
+            f"INSERT INTO watch_sources ({keys}) VALUES ({marks})", row
+        )
+        return int(cur.lastrowid)
+
+    def update(self, src: "WatchSource") -> None:
+        if src.id is None:
+            return
+        row = src.to_row()
+        sets = ", ".join(f"{k} = :{k}" for k in row)
+        get_database().execute(
+            f"UPDATE watch_sources SET {sets} WHERE id = :id", {**row, "id": src.id}
+        )
+
+    def save_snapshot(
+        self,
+        source_id: int,
+        title: str = "",
+        price: float | None = None,
+        deadline: str = "",
+        content_hash: str = "",
+        item_id: int | None = None,
+    ) -> None:
+        """抓完一轮后回写最后一次观察到的状态。"""
+        get_database().execute(
+            "UPDATE watch_sources SET title = ?, last_price = ?, last_deadline = ?, "
+            "last_hash = ?, item_id = COALESCE(?, item_id), last_checked = ? "
+            "WHERE id = ?",
+            (title, price, deadline, content_hash, item_id, _now(), source_id),
+        )
+
+    def set_enabled(self, source_id: int, enabled: bool) -> None:
+        get_database().execute(
+            "UPDATE watch_sources SET enabled = ? WHERE id = ?",
+            (int(enabled), source_id),
+        )
+
+    def delete(self, source_id: int) -> None:
+        get_database().execute("DELETE FROM watch_sources WHERE id = ?", (source_id,))
+
+    def count(self) -> tuple[int, int]:
+        """返回 (启用数, 总数)。"""
+        row = get_database().query_one(
+            "SELECT SUM(enabled) AS on, COUNT(*) AS total FROM watch_sources")
+        if not row:
+            return 0, 0
+        return int(row["on"] or 0), int(row["total"] or 0)
+
+
 items = ItemRepository()
 signups = SignupRepository()
 templates = TemplateRepository()
 publishes = PublishRepository()
 stats = StatsRepository()
+watch_sources = WatchRepository()

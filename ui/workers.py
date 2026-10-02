@@ -46,6 +46,46 @@ class ScrapeWorker(QThread):
         self.finished_all.emit(self.results)
 
 
+class WatchWorker(QThread):
+    """v1.2.0：逐个重抓监控源，实时汇报「正在看第几个」。"""
+
+    progress = Signal(str)
+    one_done = Signal(object)          # 单个 WatchChange（含无变化的）
+    finished_all = Signal(list)        # 只有真正有变化/出错的那些
+
+    def __init__(self, sources: list, parent=None) -> None:
+        super().__init__(parent)
+        self.sources = list(sources)
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    def run(self) -> None:  # pragma: no cover - 线程体
+        from core import config
+        from core.repository import watch_sources as repo
+        from core.watcher import WatchService, check_source
+
+        svc = WatchService()
+        auto_import = bool(config.load_settings().get("watch_auto_import", False))
+        hits = []
+        total = len(self.sources)
+        for idx, src in enumerate(self.sources, 1):
+            if self._cancelled:
+                break
+            self.progress.emit(f"正在检查第 {idx}/{total} 个：{src.title or src.url}")
+            try:
+                change = check_source(src)
+            except Exception as exc:      # 单个站点失败不影响整批
+                from core.watcher import WatchChange
+                change = WatchChange(source=src, error=str(exc))
+            self.one_done.emit(change)
+            if change.has_change and not change.error:
+                svc.apply(change)
+                hits.append(change)
+        self.finished_all.emit(hits)
+
+
 class RenderWorker(QThread):
     """批量渲染分享卡片。"""
 

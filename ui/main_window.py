@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QObject, Qt, Signal, Slot
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QStackedWidget,
@@ -16,21 +18,25 @@ from PySide6.QtWidgets import (
 )
 
 from core import config
+from core import notifier
 from core.models import Item
 from core.repository import stats as stats_repo
 from core.scheduler import ReminderService
+from core.watcher import WatchService
 from ui import theme
 from ui.collect_panel import CollectPanel
 from ui.manage_panel import ManagePanel
 from ui.render_panel import RenderPanel
 from ui.settings_dialog import SettingsDialog
 from ui.stats_panel import StatsPanel
+from ui.watch_panel import WatchPanel
 
 _NAV = (
     ("collect", "信息采集台"),
     ("manage", "内容管理台"),
     ("render", "分发生成器"),
     ("stats", "数据看板"),
+    ("watch", "自动盯梢"),
 )
 
 
@@ -39,6 +45,7 @@ class Bridge(QObject):
 
     due_soon = Signal(object)
     status_changed = Signal(int)
+    watch_found = Signal(object)
 
 
 class MainWindow(QMainWindow):
@@ -55,13 +62,19 @@ class MainWindow(QMainWindow):
         self.bridge = Bridge()
         self.bridge.due_soon.connect(self._on_due_soon)
         self.bridge.status_changed.connect(self._on_status_changed)
+        self.bridge.watch_found.connect(self._on_watch_found)
 
         self.reminder = ReminderService(
             on_due_soon=lambda items_: self.bridge.due_soon.emit(items_),
             on_status_changed=lambda n: self.bridge.status_changed.emit(n),
         )
+        self.watcher = WatchService(
+            on_updates=lambda changes: self.bridge.watch_found.emit(changes)
+        )
+        self._force_quit = False          # 托盘「退出」置 True，绕开最小化逻辑
         self._build_panels()
         self._build_ui()
+        self._build_tray()
         self._start_timer()
         self._refresh_summary()
 
@@ -72,6 +85,7 @@ class MainWindow(QMainWindow):
         self.manage = ManagePanel()
         self.render = RenderPanel()
         self.stats = StatsPanel()
+        self.watch = WatchPanel()
 
         self.collect.items_imported.connect(lambda n: self._goto("manage"))
         self.collect.items_imported.connect(lambda _n: self.manage.refresh())
@@ -125,7 +139,7 @@ class MainWindow(QMainWindow):
 
         # —— 内容区 ——
         self.stack = QStackedWidget()
-        for panel in (self.collect, self.manage, self.render, self.stats):
+        for panel in (self.collect, self.manage, self.render, self.stats, self.watch):
             self.stack.addWidget(panel)
         root.addWidget(self.stack, 1)
 
@@ -147,7 +161,7 @@ class MainWindow(QMainWindow):
             panel.refresh()
         elif isinstance(panel, RenderPanel):
             panel.refresh_all()
-        elif isinstance(panel, StatsPanel):
+        elif isinstance(panel, (StatsPanel, WatchPanel)):
             panel.refresh()
 
     def _goto(self, key: str) -> None:
@@ -156,13 +170,62 @@ class MainWindow(QMainWindow):
                 self.nav.setCurrentRow(i)
                 break
 
+    def _build_tray(self) -> None:
+        """托盘图标 + 右键菜单。右键菜单用 self 当 owner，保证 quitting 信号可用。"""
+        cfg = config.load_settings()
+        if not cfg.get("tray_enabled", True) or not notifier.available():
+            self.tray = None
+            return
+        menu = QMenu(self)
+        act_show = QAction("打开主界面", self)
+        act_show.triggered.connect(self._restore_from_tray)
+        act_scan = QAction("立即检查", self)
+        act_scan.triggered.connect(self._scan_now)
+        act_quit = QAction("退出", self)
+        act_quit.triggered.connect(self._quit_from_tray)
+        menu.addAction(act_show)
+        menu.addAction(act_scan)
+        menu.addSeparator()
+        menu.addAction(act_quit)
+
+        ok = notifier.show_tray(self, menu)
+        self.tray = notifier.icon(self)
+        if ok and self.tray is not None:
+            self.tray.messageClicked.connect(self._on_tray_clicked)
+            self.tray.activated.connect(self._on_tray_activated)
+
+    def _restore_from_tray(self) -> None:
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _quit_from_tray(self) -> None:
+        self._force_quit = True
+        self.close()
+
+    @Slot()
+    def _on_tray_clicked(self) -> None:
+        """点气泡通知 → 打开主界面并跳到内容管理台。"""
+        self._goto("manage")
+        self._restore_from_tray()
+
+    @Slot(object)
+    def _on_tray_activated(self, reason) -> None:
+        from PySide6.QtWidgets import QSystemTrayIcon
+
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+            self._restore_from_tray()
+
     def _start_timer(self) -> None:
         started = self.reminder.start()
         self._timer_state = started
+        self.watcher.start()
 
     def _restart_timer(self) -> None:
         self.reminder.stop()
         self._timer_state = self.reminder.start()
+        self.watcher.stop()
+        self.watcher.start()
 
     def _scan_now(self) -> None:
         due = self.reminder.scan_now()
@@ -170,25 +233,43 @@ class MainWindow(QMainWindow):
         self._refresh_summary()
         if not due:
             self._set_status("检查完成：没有临近截止的内容")
+            self._maybe_notify("检查完成", "没有临近截止的内容")
             return
-        self._on_due_soon(due)
+        # 手动点「立即检查」时给一条汇总通知；后台定时扫描只发提醒不弹窗
+        self._maybe_notify(
+            f"{len(due)} 条内容即将截止",
+            "、".join(it.title for it in due[:5]) + ("…" if len(due) > 5 else ""),
+        )
+        self._refresh_summary()
+        self._set_status(f"{len(due)} 条内容即将截止，已在通知栏提醒")
+
+    def _maybe_notify(self, title: str, message: str) -> bool:
+        """按设置决定是否弹桌面通知（无 Qt/无托盘时静默失败）。"""
+        cfg = config.load_settings()
+        if not cfg.get("notify_enabled", True) or not notifier.available():
+            return False
+        return notifier.notify(title, message)
 
     @Slot(object)
     def _on_due_soon(self, items_: list[Item]) -> None:
-        lines = [f"· {it.title} —— 截止 {it.deadline}" for it in items_[:8]]
-        more = f"\n…还有 {len(items_) - 8} 条" if len(items_) > 8 else ""
+        """后台定时扫到即将截止：发桌面气泡 + 更新状态栏，不打断当前操作。"""
         self._set_status(f"{len(items_)} 条内容即将截止")
-        box = QMessageBox(self)
-        box.setWindowTitle("临时提醒")
-        box.setText(f"{len(items_)} 条内容快到截止了：\n\n" + "\n".join(lines) + more)
-        box.setIcon(QMessageBox.Information)
-        box.setStyleSheet(theme.QSS)
-        go = box.addButton("去处理", QMessageBox.AcceptRole)
-        box.addButton("知道了", QMessageBox.RejectRole)
-        box.setDefaultButton(go)
-        box.exec()
-        if box.clickedButton() is go:
-            self._goto("manage")
+        self._maybe_notify(
+            f"{len(items_)} 条内容快到截止了",
+            "、".join(it.title for it in items_[:5]) + ("…" if len(items_) > 5 else ""),
+        )
+        self._refresh_summary()
+
+    @Slot(object)
+    def _on_watch_found(self, changes) -> None:
+        """监控源有更新：通知 + 让盯梢面板刷新。"""
+        lines = [c.summary() for c in changes[:5]]
+        self.watch.refresh()
+        self._maybe_notify(
+            f"{len(changes)} 个监控内容有更新",
+            "\n".join(lines) + ("\n…" if len(changes) > 5 else ""),
+        )
+        self._set_status(f"{len(changes)} 个监控内容有更新")
 
     @Slot(int)
     def _on_status_changed(self, count: int) -> None:
@@ -221,10 +302,18 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt 接口
         cfg = config.load_settings()
+        # 开了「缩到托盘」且用户是点关闭按钮（不是托盘菜单退出）→ 只隐藏，程序继续跑
+        if cfg.get("minimize_to_tray", True) and not self._force_quit:
+            event.ignore()
+            self.hide()
+            self._maybe_notify("邻里圈在后台运行", "已缩到系统托盘，点图标可随时唤出")
+            return
         if cfg.get("window_width") != self.width() or cfg.get("window_height") != self.height():
             config.save_settings({"window_width": self.width(),
                                   "window_height": self.height()})
         self.reminder.stop()
+        self.watcher.stop()
+        notifier.hide_tray()
         super().closeEvent(event)
 
 
