@@ -266,6 +266,48 @@ class SignupRepository:
                 added += 1
         return added
 
+    # —— v1.3.0：结算 ——
+
+    def set_settled(self, item_id: int, settled: bool,
+                    ids: list[int] | None = None) -> int:
+        """批量改「是否已结清」，返回受影响行数。
+
+        ids 为空表示整条内容一起改（全选 / 全部取消）。
+        注意：这里只记结清状态，不碰任何金额——工具不当账本。
+        """
+        flag = 1 if settled else 0
+        db = get_database()
+        if ids:
+            marks = ",".join("?" * len(ids))
+            cursor = db.execute(
+                f"UPDATE signups SET settled = ? WHERE item_id = ? AND id IN ({marks})",
+                (flag, item_id, *ids),
+            )
+        else:
+            cursor = db.execute(
+                "UPDATE signups SET settled = ? WHERE item_id = ?", (flag, item_id)
+            )
+        return int(cursor.rowcount or 0)
+
+    def settlement_summary(self, item_id: int) -> dict[str, float]:
+        """结算台要的汇总：人数与份数按「已结清 / 待结清」拆开。"""
+        row = get_database().query_one(
+            "SELECT "
+            "  COUNT(*) AS people, "
+            "  COALESCE(SUM(qty), 0) AS qty, "
+            "  COALESCE(SUM(CASE WHEN settled = 1 THEN 1 ELSE 0 END), 0) AS done_people, "
+            "  COALESCE(SUM(CASE WHEN settled = 1 THEN qty ELSE 0 END), 0) AS done_qty, "
+            "  COALESCE(SUM(CASE WHEN settled = 0 THEN 1 ELSE 0 END), 0) AS wait_people, "
+            "  COALESCE(SUM(CASE WHEN settled = 0 THEN qty ELSE 0 END), 0) AS wait_qty "
+            "FROM signups WHERE item_id = ?",
+            (item_id,),
+        )
+        if not row:
+            return {"people": 0, "qty": 0.0, "done_people": 0, "done_qty": 0.0,
+                    "wait_people": 0, "wait_qty": 0.0}
+        return {k: (float(row[k]) if k.endswith("qty") else int(row[k]))
+                for k in row.keys()}
+
 
 # ===========================================================================
 # 卡片模板与分发记录

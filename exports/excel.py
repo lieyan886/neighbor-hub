@@ -127,5 +127,50 @@ def export_groupbuy_packing(items: list[Item], signups_map: dict[int, list],
     return str(path)
 
 
+def export_settlement(item: Item, rows: list, only_unsettled: bool = False,
+                      output_dir: str | Path | None = None) -> str:
+    """结算清单：谁结清了、谁还没。
+
+    工具不碰钱，这里只汇总「份数」与「结清状态」，金额由团长按群收款自己核。
+    only_unsettled=True 时只导出待结清的人，用于催一轮。
+    """
+    config.ensure_dirs()
+    from core.repository import signups as signup_repo
+
+    summary = signup_repo.settlement_summary(item.id or 0)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "待结清" if only_unsettled else "结算清单"
+    ws.append(["序号", "姓名/昵称", "联系方式", "数量", "单位", "已结清", "备注", "登记时间"])
+
+    # 清单可能被转发给志愿者核对，一律按 export 口径脱敏
+    picked = [s for s in privacy.scrub_rows(rows, scope="export")
+              if (not s.settled) or not only_unsettled]
+
+    for idx, s in enumerate(picked, 1):
+        ws.append([idx, s.name, s.contact, s.qty, s.unit or item.unit or "份",
+                   "是" if s.settled else "否", s.note, s.created_at])
+
+    unit = item.unit or "份"
+    ws.append(["", "合计", "", sum(float(s.qty or 0) for s in picked), unit, "", "", ""])
+    ws.append(["", f"共 {summary['people']} 人 {summary['qty']:g}{unit}"
+                   f"（已结清 {summary['done_people']} 人 / 待结清 {summary['wait_people']} 人）",
+               "", "", "", "", "", ""])
+
+    _style_header(ws, {"序号": 6, "姓名/昵称": 16, "联系方式": 16, "数量": 8,
+                       "单位": 8, "已结清": 8, "备注": 24, "登记时间": 18})
+    for row in ws.iter_rows(min_row=ws.max_row - 1):
+        for cell in row:
+            cell.font = Font(name="微软雅黑", size=10, bold=True)
+
+    dest = Path(output_dir or config.EXPORT_DIR)
+    dest.mkdir(parents=True, exist_ok=True)
+    kind = "待结清清单" if only_unsettled else "结算清单"
+    path = dest / f"{kind}_{_safe(item.title)}_{datetime.now():%Y%m%d_%H%M}.xlsx"
+    wb.save(path)
+    return str(path)
+
+
 def _safe(text: str) -> str:
     return "".join(c for c in (text or "")[:20] if c not in '\\/:*?"<>|') or "未命名"

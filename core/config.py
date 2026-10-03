@@ -11,7 +11,7 @@ from typing import Any
 
 # --- 版本常量 ---------------------------------------------------------------
 APP_NAME = "邻里圈"
-APP_VERSION = "1.2.0"                  # 语义化版本：主.次.修订
+APP_VERSION = "1.3.0"                  # 语义化版本：主.次.修订
 APP_TAGLINE = "社群运营工作台"
 
 # --- 路径常量 ---------------------------------------------------------------
@@ -97,6 +97,14 @@ def save_settings(patch: dict[str, Any] | None = None) -> dict[str, Any]:
         )
         _cache = dict(data)
         return _cache
+
+
+def reload_settings() -> dict[str, Any]:
+    """丢掉内存缓存，重新从磁盘读（从备份恢复后要调一次）。"""
+    global _cache
+    with _lock:
+        _cache = None
+    return load_settings()
 
 
 def reset_settings() -> dict[str, Any]:

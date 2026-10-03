@@ -219,8 +219,15 @@ def run_selftest() -> int:
         win._goto("watch")
         win._refresh_summary()
         title = win.windowTitle()
+
+        # v1.3.0 补：设置对话框曾经因为控件在 _load 里才创建、而 _load 开头
+        # 就要读它们，一打开就 AttributeError 崩溃。这里守住不再回归。
+        from ui.settings_dialog import SettingsDialog
+
+        dlg = SettingsDialog(win)
+        dlg.reject()
         win.close()
-        return f"主窗口构建并切换四个页面成功：{title}"
+        return f"主窗口构建并切换四个页面成功：{title}；设置对话框可打开"
 
     def step_browser() -> str:
         """用本地 file:// 页面跑一次真 JS 渲染，不依赖外网。
@@ -345,6 +352,57 @@ def run_selftest() -> int:
         assert watch_repo.get(sid) is None, "删除没生效"
         return detail
 
+    def step_settlement() -> str:
+        """结算闭环：批量改结清状态 → 汇总按结清/待结清拆开 → 导出催款清单。"""
+        assert inserted, "没有可用条目"
+        it = inserted[0]
+        signup_repo.batch_add(it.id or 0, [(f"邻居{i}", float(i)) for i in range(1, 5)])
+        rows = signup_repo.list_for(it.id or 0)
+        assert len(rows) >= 4, "报名没登记进去"
+
+        ids = [s.id for s in rows[:2]]
+        changed = signup_repo.set_settled(it.id or 0, True, ids)
+        assert changed == len(ids), f"批量结清应影响 {len(ids)} 行，实际 {changed}"
+
+        s = signup_repo.settlement_summary(it.id or 0)
+        assert s["done_people"] == 2, f"已结清人数应为 2，实际 {s['done_people']}"
+        assert s["wait_people"] == len(rows) - 2, "待结清人数对不上"
+        assert abs((s["done_qty"] + s["wait_qty"]) - s["qty"]) < 1e-6, "份数拆分后对不上总数"
+
+        # 待结清清单里只该出现还没结清的人
+        path = excel.export_settlement(it, signup_repo.list_for(it.id or 0),
+                                       only_unsettled=True)
+        assert Path(path).exists(), "待结清清单没导出"
+        from openpyxl import load_workbook
+
+        body = [r[0] for r in load_workbook(path).active.iter_rows(min_row=2,
+                                                                   values_only=True)]
+        names = [b for b in body if b]
+        assert len(names) == s["wait_people"], (
+            f"待结清清单应有 {s['wait_people']} 人，实际 {len(names)}")
+        return (f"{len(rows)} 人：已结清 {s['done_people']} / 待结清 {s['wait_people']}"
+                f"，导出 {Path(path).name}")
+
+    def step_backup() -> str:
+        """备份与恢复：打包 → 删一条 → 恢复 → 数据得原样回来。"""
+        from core import backup
+
+        before = len(item_repo.list_items(include_archived=True))
+        zip_path = backup.create_backup(tmp / "backups")
+        assert Path(zip_path).exists(), "备份文件没生成"
+        manifest = backup.read_manifest(zip_path)
+        assert manifest.get("counts", {}).get("items") == before, "清单条目数与库里不一致"
+
+        victim = item_repo.list_items(include_archived=True)[0]
+        item_repo.delete(victim.id or 0)
+        assert len(item_repo.list_items(include_archived=True)) == before - 1, "删除没生效"
+
+        ok, msg = backup.restore_backup(zip_path)
+        assert ok, f"恢复失败：{msg}"
+        after = len(item_repo.list_items(include_archived=True))
+        assert after == before, f"恢复后应回到 {before} 条，实际 {after}"
+        return f"备份 {Path(zip_path).name}；删一条后恢复，还原到 {after} 条"
+
     def step_pushkit() -> str:
         """一键推群：文案 + 卡片 + 分发记录三件套能否串起来（不碰剪贴板）。"""
         picked = inserted[:2] or item_repo.list_items(limit=2)
@@ -390,6 +448,7 @@ def run_selftest() -> int:
     check("指纹去重", step_dedupe)
     check("状态自动流转", step_status)
     check("接龙登记与累加", step_signup)
+    check("结算闭环", step_settlement)
     check("卡片渲染", step_render)
     check("文案生成", step_copy)
     check("对外脱敏", step_privacy)
@@ -401,6 +460,7 @@ def run_selftest() -> int:
     check("统计查询", step_stats)
     check("图表渲染", step_charts)
     check("主窗口构建", step_ui)
+    check("备份与恢复", step_backup)
 
     width = max(len(n) for n, _, _ in results)
     print("\n=== 邻里圈自检报告 ===")

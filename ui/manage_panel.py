@@ -39,6 +39,7 @@ from core.utils import format_price, humanize, parse_datetime, to_iso
 from exports import excel
 from ui import theme
 from ui.item_dialog import ItemDialog
+from ui.settle_dialog import SettleDialog
 from ui.signup_dialog import PasteSolitaireDialog, SignupDialog
 from ui.widgets import EmptyState, confirm, hint_label, make_table, warn
 
@@ -54,6 +55,7 @@ class ManagePanel(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.current_item: Item | None = None
+        self._loading_signup = False
         self._build_ui()
         self.refresh()
 
@@ -168,18 +170,24 @@ class ManagePanel(QWidget):
         self.add_signup_btn.clicked.connect(self._add_signup)
         self.paste_btn = QPushButton("粘贴接龙")
         self.paste_btn.clicked.connect(self._paste_solitaire)
+        self.settle_btn = QPushButton("结算")
+        self.settle_btn.setProperty("variant", "ghost")
+        self.settle_btn.clicked.connect(self._settle)
         self.del_signup_btn = QPushButton("删除")
         self.del_signup_btn.setProperty("variant", "danger")
         self.del_signup_btn.clicked.connect(self._del_signup)
         self.export_btn = QPushButton("导出 Excel")
         self.export_btn.setProperty("variant", "ghost")
         self.export_btn.clicked.connect(self._export_signups)
-        for b in (self.add_signup_btn, self.paste_btn, self.del_signup_btn, self.export_btn):
+        for b in (self.add_signup_btn, self.paste_btn, self.settle_btn,
+                  self.del_signup_btn, self.export_btn):
             sign_head.addWidget(b)
 
         self.signup_table = make_table(("昵称/房号", "数量", "单位", "备注", "已结清"))
         self.signup_table.setMaximumHeight(240)
         self.signup_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.signup_table.setColumnWidth(4, 76)
+        self.signup_table.itemChanged.connect(self._on_signup_changed)
 
         layout.addWidget(self.detail_title)
         layout.addWidget(self.detail_meta)
@@ -194,8 +202,8 @@ class ManagePanel(QWidget):
 
     def _set_detail_enabled(self, enabled: bool) -> None:
         for w in (self.edit_btn, self.publish_btn, self.archive_btn, self.delete_btn,
-                  self.add_signup_btn, self.paste_btn, self.del_signup_btn,
-                  self.export_btn, self.signup_table):
+                  self.add_signup_btn, self.paste_btn, self.settle_btn,
+                  self.del_signup_btn, self.export_btn, self.signup_table):
             w.setEnabled(enabled)
 
     # ============================ 数据 ============================
@@ -305,17 +313,28 @@ class ManagePanel(QWidget):
                 if rows else "还没人报名"
             )
 
+        # 「已结清」这一列做成可勾选，勾选即写库；重建表格时要压掉 itemChanged
+        self._loading_signup = True
+        self.signup_table.blockSignals(True)
         self.signup_table.setRowCount(0)
         for s in rows:
             r = self.signup_table.rowCount()
             self.signup_table.insertRow(r)
-            vals = (s.name, f"{s.qty:g}", s.unit or "份", s.note, "是" if s.settled else "否")
+            vals = (s.name, f"{s.qty:g}", s.unit or "份", s.note)
             for col, val in enumerate(vals):
                 cell = QTableWidgetItem(val)
                 cell.setData(Qt.UserRole, s.id)
-                if col in (1, 2, 4):
+                if col in (1, 2):
                     cell.setTextAlignment(Qt.AlignCenter)
                 self.signup_table.setItem(r, col, cell)
+            check = QTableWidgetItem("")
+            check.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            check.setCheckState(Qt.Checked if s.settled else Qt.Unchecked)
+            check.setData(Qt.UserRole, s.id)
+            check.setTextAlignment(Qt.AlignCenter)
+            self.signup_table.setItem(r, 4, check)
+        self.signup_table.blockSignals(False)
+        self._loading_signup = False
 
     # ============================ 操作 ============================
 
@@ -405,6 +424,27 @@ class ManagePanel(QWidget):
         signup_repo.delete(int(cell.data(Qt.UserRole)))
         self._load_detail(self.current_item)
         self.data_changed.emit()
+
+    def _on_signup_changed(self, cell: QTableWidgetItem) -> None:
+        """报名表里勾「已结清」直接写库。"""
+        if self._loading_signup or cell.column() != 4:
+            return
+        item = self.current_item
+        signup_id = cell.data(Qt.UserRole)
+        if not item or not signup_id:
+            return
+        signup_repo.set_settled(item.id, cell.checkState() is Qt.Checked,
+                                [int(signup_id)])
+
+    def _settle(self) -> None:
+        item = self.current_item
+        if not item:
+            return
+        dlg = SettleDialog(self, item)
+        if dlg.exec():
+            self._load_detail(item)
+            self.refresh()
+            self.data_changed.emit()
 
     def _export_signups(self) -> None:
         item = self.current_item
