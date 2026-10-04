@@ -6,13 +6,49 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 
 from core import privacy
 from core.models import Item, Signup, KIND_LABELS, kind_label
 from core.utils import format_price, humanize
 
 _LINE_NUM = re.compile(r"^\s*(\d{1,3})\s*[.、．)）:：]\s*(.+)$")
-_QTY_AT_END = re.compile(r"(\d+(?:\.\d+)?)\s*(份|件|个|斤|人|箱|支|盒|袋)?\s*$")
+_QTY_AT_END = re.compile(r"(\d+(?:\.\d+)?)\s*(份|件|个|斤|人|箱|支|盒|袋|瓶|包)?\s*$")
+
+# —— v1.4.0：真实群聊里的脏东西 ——
+# 群里复制出来的文本远不止「1. 张三 2份」，混着表情、时间戳、闲聊和改单，
+# 老版本只认行尾数量，遇到这些就全废了，最后还是得团长手工删一遍。
+_EMOJI = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200d]")
+_STAMP = re.compile(
+    r"^\s*(?:\d{4}年\d{1,2}月\d{1,2}日)?\s*(?:上午|下午|晚上|凌晨)?\s*"
+    r"\d{1,2}:\d{2}(?::\d{2})?\s*")
+_AT = re.compile(r"@[^\s:：,，]+")
+
+_CHAT_WORDS = (
+    "收到", "好的", "好嘞", "好哒", "好勒", "ok", "okay", "嗯", "明白", "了解",
+    "谢谢", "多谢", "辛苦了", "支持", "已接龙", "稍等", "在的", "来了", "安排",
+    "可以", "没问题", "thanks", "thx", "哈哈", "赞",
+)
+_CHAT_ONLY = re.compile(r"^(?:" + "|".join(_CHAT_WORDS) + r")+$", re.I)
+
+# 改单 / 取消：群里二次粘贴时最常见的两种「修正」
+_MODIFY = re.compile(r"(?:改成|改为|换成|改为是|调整[成为]?|增加[到]?|加到|改成是)"
+                     r"\s*(\d+(?:\.\d+)?)")
+_CANCEL = re.compile(r"(?:不要了|不参与|不参加了|取消了?|退出|退了|算了|划掉)")
+
+# 数量写在中间而不是行尾：张三要2份 / 张三+1 / 张三x2
+_VERB_QTY = re.compile(r"(?:要|买|来|订|拿|加|提|报|需|给我|需要)"
+                       r"\s*(\d+(?:\.\d+)?)\s*(份|件|个|斤|人|箱|支|盒|袋|瓶|包)?")
+_PLUS_QTY = re.compile(r"[+＋]\s*(\d+(?:\.\d+)?)")
+_MUL_QTY = re.compile(r"[xX×\*]\s*(\d+(?:\.\d+)?)")
+
+
+def _clean_name(text: str) -> str:
+    """把一段文本收拾成可用的人名；不是人名（纯符号/纯数字）就返回空。"""
+    name = re.sub(r"\s+", " ", text or "").strip(" ，,、。.:：!！~-—")
+    if not name or re.fullmatch(r"[\W_0-9]+", name):
+        return ""
+    return name
 
 
 # ===========================================================================
@@ -112,43 +148,228 @@ def build_digest(items: list[Item], community: str = "", title: str = "") -> str
 
 
 # ===========================================================================
+# v1.4.0：发团之后的全周期文案
+#
+# 之前只有「发团前」的三件套（公告/接龙模板/汇总），开团之后催一轮、
+# 到货通知、催收结算、没成团的解释，全都得团长手打。这四种模板固定、
+# 只换名字和份数，机器生成是白捡的收益。
+# ===========================================================================
+
+
+def build_reminder(item: Item, signed_qty: float = 0.0, community: str = "",
+                   operator: str = "") -> str:
+    """催办：快到截止了，还差多少没人报。"""
+    unit = item.unit or ("人" if item.kind == "event" else "份")
+    lines = [f"⏰ 催一下 —— 《{item.title}》"]
+    if community:
+        lines.append(f"#{community}#")
+
+    if item.deadline or item.event_at:
+        when = item.event_at if item.kind == "event" and item.event_at else item.deadline
+        lines.append(f"时间就在 {humanize(when)}，还没报的邻居抓紧。")
+
+    if item.quota:
+        gap = max(0.0, float(item.quota) - float(signed_qty))
+        lines.append(
+            f"进度：{format_price(signed_qty)}/{item.quota}{unit}"
+            + (f"，还差 {format_price(gap)}{unit} 成团。" if gap > 0
+               else "，名额已满，不再加单。")
+        )
+    else:
+        lines.append(f"目前已报 {format_price(signed_qty)}{unit}。")
+
+    lines.append("————————")
+    tail = "要报的在群里接龙一句就行"
+    if operator:
+        tail += f"，找不到入口找我（{operator}）"
+    lines.append(tail + "。")
+    return "\n".join(lines)
+
+
+def build_arrival_notice(item: Item, signups: list[Signup], community: str = "",
+                         operator: str = "", contact: str = "") -> str:
+    """到货通知：货到了，按人列份数，方便核对。"""
+    unit = item.unit or "份"
+    lines = [f"📦 到货啦 —— 《{item.title}》"]
+    if community:
+        lines.append(f"#{community}#")
+
+    bits = []
+    if item.location:
+        bits.append(f"取货点：{privacy.mask_free_text(item.location)}")
+    if operator:
+        bits.append(f"联系人：{operator}"
+                    + (f"（{contact}）" if contact else ""))
+    if bits:
+        lines.extend(bits)
+    lines.append("————————")
+
+    # 这份名单会直接贴到群里，按 public 口径遮罩
+    for idx, s in enumerate(privacy.scrub_rows(signups, scope="public"), 1):
+        lines.append(f"{idx}. {s.name}　{format_price(s.qty)}{s.unit or unit}")
+
+    if signups:
+        total = sum(float(s.qty or 0) for s in signups)
+        lines.append("————————")
+        lines.append(f"共 {len(signups)} 位，合计 {format_price(total)}{unit}。")
+    lines.append("麻烦对一下份数，有出入群里说一声，我这边改。")
+    return "\n".join(lines)
+
+
+def build_settlement_chase(item: Item, signups: list[Signup], community: str = "",
+                           operator: str = "", contact: str = "") -> str:
+    """催收结算：只点还没结清的人，已结清的不用理会。"""
+    unit = item.unit or "份"
+    pending = [s for s in (signups or []) if not s.settled]
+    lines = [f"💰《{item.title}》结算提醒"]
+    if community:
+        lines.append(f"#{community}#")
+
+    if not pending:
+        lines.append("————————")
+        lines.append("已经全部结清，谢谢各位邻居！")
+        return "\n".join(lines)
+
+    if item.price is not None:
+        lines.append(f"每{unit} ¥{format_price(item.price)}，按自己登记的份数转就行。")
+    lines.append(f"还有 {len(pending)} 位没结清，麻烦看到转一下：")
+    lines.append("————————")
+    for idx, s in enumerate(privacy.scrub_rows(pending, scope="public"), 1):
+        amount = (f"　¥{format_price(float(s.qty or 0) * float(item.price or 0))}"
+                  if item.price is not None else "")
+        lines.append(f"{idx}. {s.name}　{format_price(s.qty)}{s.unit or unit}{amount}")
+    lines.append("————————")
+    tail = "收齐我会在群里说一声"
+    if operator:
+        tail += f"，有问题找我（{operator}）"
+        if contact:
+            tail += f"（{contact}）"
+    lines.append(tail + "。已结清的不用理会，谢谢！")
+    return "\n".join(lines)
+
+
+def build_fail_notice(item: Item, signed_qty: float = 0.0,
+                      community: str = "", operator: str = "") -> str:
+    """没成团：给已报名邻居一个交代，避免群里尴尬。"""
+    unit = item.unit or ("人" if item.kind == "event" else "份")
+    lines = [f"😔《{item.title}》这次先撤了"]
+    if community:
+        lines.append(f"#{community}#")
+
+    if item.quota:
+        lines.append(
+            f"目标 {item.quota}{unit}，最后接到 {format_price(signed_qty)}{unit}，"
+            "没凑够起量，这次只能先取消。"
+        )
+    else:
+        lines.append("参与的邻居太少，这次没能成行。")
+
+    lines.append("————————")
+    lines.append("已经报名的邻居不好意思，下次有合适的我再吆喝一声。")
+    if operator:
+        lines.append(f"（{operator}）")
+    return "\n".join(lines)
+
+
+# ===========================================================================
 # 回解析：文本 -> 结构化
 # ===========================================================================
+
+
+@dataclass
+class ParseResult:
+    """接龙解析结果。
+
+    rows        新增或累加的 (名字, 数量)
+    adjustments 改单与取消：(名字, 新数量)，数量为 None 表示这人不要了
+    skipped     实在识别不出人名的原行，交给用户肉眼确认，不静默吞掉
+    """
+
+    rows: list[tuple[str, float]] = field(default_factory=list)
+    adjustments: list[tuple[str, float | None]] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+
+
+def parse_solitaire_detail(text: str, unit: str = "份",
+                           default_qty: float = 1.0) -> ParseResult:
+    """把群里回收的文本拆成三类：新增 / 改单取消 / 认不出来的。
+
+    兼容的写法（比老版本宽得多）：
+        1. 张三 2份            # 行尾数量
+        2、3栋王姐 1           # 名字里带数字但不会误吞
+        张三要2份               # 数量在句中间
+        张三+1 / 张三x2        # 追加、翻倍
+        张三改成3份             # 改单（老版本会当成新加一个人）
+        张三不要了              # 取消
+        收到 / 👌 / 22:14 张三  # 自动滤掉闲聊、表情、微信时间戳
+    """
+    res = ParseResult()
+    for raw in (text or "").splitlines():
+        line = _STAMP.sub("", _EMOJI.sub("", raw)).strip()
+        line = _AT.sub("", line).strip()
+        if not line:
+            continue
+
+        m = _LINE_NUM.match(line)
+        body = (m.group(2) if m else line).strip()
+        if not body:
+            continue
+
+        # 引导语与标题行：【xx】接龙 / 格式：1. 昵称
+        if body.startswith(("格式", "接龙", "【")) or ("接龙" in body and len(body) < 12):
+            continue
+
+        compact = re.sub(r"[\s\W_]+", "", body)
+        if _CHAT_ONLY.match(compact):
+            res.skipped.append(raw.strip())
+            continue
+
+        if _CANCEL.search(compact):
+            name = _clean_name(_CANCEL.sub("", body))
+            if name:
+                res.adjustments.append((name, None))
+                continue
+
+        mod = _MODIFY.search(body)
+        if mod:
+            name = _clean_name(body[: mod.start()])
+            if name:
+                res.adjustments.append((name, float(mod.group(1))))
+                continue
+
+        qty = default_qty
+        for pat in (_PLUS_QTY, _MUL_QTY):
+            hit = pat.search(body)
+            if hit:
+                qty = float(hit.group(1))
+                body = f"{body[: hit.start()]} {body[hit.end():]}".strip()
+                break
+        else:
+            hit = _VERB_QTY.search(body)
+            if hit:
+                qty = float(hit.group(1))
+                body = f"{body[: hit.start()]} {body[hit.end():]}".strip()
+            else:
+                hit = _QTY_AT_END.search(body)
+                if hit:
+                    qty = float(hit.group(1))
+                    body = body[: hit.start()].strip()
+
+        name = _clean_name(body)
+        if not name:
+            res.skipped.append(raw.strip())
+            continue
+        res.rows.append((name, qty))
+    return res
 
 
 def parse_solitaire(text: str, unit: str = "份",
                     default_qty: float = 1.0) -> list[tuple[str, float]]:
     """把群里回收的接龙文本拆成 [(名字, 数量), ...]。
 
-    兼容以下几种写法：
-        1. 张三 2份
-        2、3栋王姐 1
-        3)李雷  (没写数量按 1 算)
+    只要新增部分（改单/取消要区分开的用 parse_solitaire_detail）。
     """
-    rows: list[tuple[str, float]] = []
-    for ln in (text or "").splitlines():
-        line = ln.strip()
-        if not line:
-            continue
-        m = _LINE_NUM.match(line)
-        body = m.group(2) if m else line
-        body = body.strip()
-        if not body:
-            continue
-        # 排除非接龙行：标题/说明里常见的引导语
-        if body.startswith(("格式", "接龙")) or "接龙" in body and len(body) < 12:
-            continue
-
-        qty = default_qty
-        qm = _QTY_AT_END.search(body)
-        if qm:
-            qty = float(qm.group(1))
-            body = body[: qm.start()].strip()
-        name = re.sub(r"\s+", " ", body).strip(" ，,、")
-        if not name:
-            continue
-        rows.append((name, qty))
-    return rows
+    return parse_solitaire_detail(text, unit, default_qty).rows
 
 
 def dedupe_solitaire(rows: list[tuple[str, float]]) -> list[tuple[str, float]]:

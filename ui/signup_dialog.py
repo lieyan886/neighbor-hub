@@ -20,7 +20,11 @@ from PySide6.QtWidgets import (
 
 from core.models import Item, Signup
 from core.utils import clean_text
-from render.copywriter import dedupe_solitaire, parse_solitaire
+from render.copywriter import (
+    ParseResult,
+    dedupe_solitaire,
+    parse_solitaire_detail,
+)
 from ui import theme
 from ui.widgets import make_table
 
@@ -114,6 +118,7 @@ class PasteSolitaireDialog(QDialog):
         super().__init__(parent)
         self.item = item
         self.rows: list[tuple[str, float]] = []
+        self.result: ParseResult = ParseResult()
         self.setWindowTitle("粘贴群接龙")
         self.resize(640, 560)
         self.setStyleSheet(theme.QSS)
@@ -127,7 +132,9 @@ class PasteSolitaireDialog(QDialog):
         layout.addWidget(QLabel("把群里邻居回复的接龙全选复制，粘到下面："))
         self.text_edit = QPlainTextEdit()
         self.text_edit.setPlaceholderText(
-            "1. 张三 2份\n2. 李雷 1\n3、3栋王姐 3份\n…"
+            "1. 张三 2份\n2. 李雷 1\n3、3栋王姐 3份\n"
+            "张三改成3份\n李四不要了\n收到\n…\n"
+            "（闲聊、表情、时间戳会自动滤掉）"
         )
         layout.addWidget(self.text_edit, 1)
 
@@ -143,7 +150,9 @@ class PasteSolitaireDialog(QDialog):
         ctrl.addStretch(1)
         layout.addLayout(ctrl)
 
-        self.table = make_table(["昵称 / 房号", "数量"], stretch_col=0)
+        self.table = make_table(["昵称 / 房号", "数量", "说明"], stretch_col=0)
+        self.table.setColumnWidth(1, 80)
+        self.table.setColumnWidth(2, 90)
         layout.addWidget(self.table, 2)
 
         self.summary_label = QLabel("")
@@ -159,20 +168,44 @@ class PasteSolitaireDialog(QDialog):
 
     def _parse(self) -> None:
         unit = self.unit_edit.text().strip() or "份"
-        rows = dedupe_solitaire(parse_solitaire(self.text_edit.toPlainText(), unit))
-        self.rows = rows
+        self.result = parse_solitaire_detail(self.text_edit.toPlainText(), unit)
+        self.rows = self.result.rows
         self.table.setRowCount(0)
-        for name, qty in rows:
-            r = self.table.rowCount()
-            self.table.insertRow(r)
-            self.table.setItem(r, 0, QTableWidgetItem(name))
-            self.table.setItem(r, 1, QTableWidgetItem(f"{qty:g} {unit}"))
-        total = sum(q for _, q in rows)
-        self.summary_label.setText(f"解析到 {len(rows)} 人，合计 {total:g} {unit}")
+
+        for name, qty in self.rows:
+            self._add_row(name, f"{qty:g} {unit}", "新增")
+        for name, qty in self.result.adjustments:
+            if qty is None:
+                self._add_row(name, "—", "取消")
+            else:
+                self._add_row(name, f"{qty:g} {unit}", "改单")
+
+        added = len(self.rows)
+        total = sum(q for _, q in self.rows)
+        bits = [f"新增 {added} 人，合计 {total:g} {unit}"]
+        adj_count = len(self.result.adjustments)
+        if adj_count:
+            bits.append(f"改单/取消 {adj_count} 条")
+        if self.result.skipped:
+            bits.append(f"{len(self.result.skipped)} 行没认出来（闲聊/表情已忽略）")
+        self.summary_label.setText("　·　".join(bits))
+
+    def _add_row(self, name: str, qty: str, mark: str) -> None:
+        r = self.table.rowCount()
+        self.table.insertRow(r)
+        self.table.setItem(r, 0, QTableWidgetItem(name))
+        cell = QTableWidgetItem(qty)
+        cell.setTextAlignment(Qt.AlignCenter)
+        self.table.setItem(r, 1, cell)
+        tag = QTableWidgetItem(mark)
+        tag.setTextAlignment(Qt.AlignCenter)
+        if mark != "新增":
+            tag.setForeground(theme.color(theme.ACCENT))
+        self.table.setItem(r, 2, tag)
 
     def accept(self) -> None:
-        if not self.rows:
+        if not self.result:
             self._parse()
-        if not self.rows:
+        if not self.rows and not self.result.adjustments:
             return
         super().accept()

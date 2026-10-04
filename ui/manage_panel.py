@@ -173,6 +173,10 @@ class ManagePanel(QWidget):
         self.settle_btn = QPushButton("结算")
         self.settle_btn.setProperty("variant", "ghost")
         self.settle_btn.clicked.connect(self._settle)
+        self.dup_btn = QPushButton("再来一团")
+        self.dup_btn.setProperty("variant", "ghost")
+        self.dup_btn.setToolTip("把这条内容复制成新一期：标题「第N期」自动+1、截止顺延 7 天、报名清空")
+        self.dup_btn.clicked.connect(self._duplicate)
         self.del_signup_btn = QPushButton("删除")
         self.del_signup_btn.setProperty("variant", "danger")
         self.del_signup_btn.clicked.connect(self._del_signup)
@@ -180,7 +184,7 @@ class ManagePanel(QWidget):
         self.export_btn.setProperty("variant", "ghost")
         self.export_btn.clicked.connect(self._export_signups)
         for b in (self.add_signup_btn, self.paste_btn, self.settle_btn,
-                  self.del_signup_btn, self.export_btn):
+                  self.dup_btn, self.del_signup_btn, self.export_btn):
             sign_head.addWidget(b)
 
         self.signup_table = make_table(("昵称/房号", "数量", "单位", "备注", "已结清"))
@@ -203,7 +207,8 @@ class ManagePanel(QWidget):
     def _set_detail_enabled(self, enabled: bool) -> None:
         for w in (self.edit_btn, self.publish_btn, self.archive_btn, self.delete_btn,
                   self.add_signup_btn, self.paste_btn, self.settle_btn,
-                  self.del_signup_btn, self.export_btn, self.signup_table):
+                  self.dup_btn, self.del_signup_btn, self.export_btn,
+                  self.signup_table):
             w.setEnabled(enabled)
 
     # ============================ 数据 ============================
@@ -402,17 +407,24 @@ class ManagePanel(QWidget):
         if not item:
             return
         dlg = PasteSolitaireDialog(self, item)
-        if not dlg.exec() or not dlg.rows:
+        if not dlg.exec() or not (dlg.rows or dlg.result.adjustments):
             return
         try:
             count = signup_repo.batch_add(item.id, dlg.rows)
+            updated, removed = signup_repo.apply_adjustments(item.id,
+                                                             dlg.result.adjustments)
         except Exception as exc:
             warn(self, "导入失败", str(exc))
             return
+        bits = [f"新增 {count} 条"]
+        if updated:
+            bits.append(f"改单 {updated} 条")
+        if removed:
+            bits.append(f"取消 {removed} 条")
         self._load_detail(item)
         self.refresh()
         self.data_changed.emit()
-        self.progress_label.setText(f"导入 {count} 条接龙记录")
+        self.progress_label.setText("导入完成：" + "，".join(bits))
 
     def _del_signup(self) -> None:
         row = self.signup_table.currentRow()
@@ -445,6 +457,26 @@ class ManagePanel(QWidget):
             self._load_detail(item)
             self.refresh()
             self.data_changed.emit()
+
+    def _duplicate(self) -> None:
+        """周期性团购：把上一期整个复制成新一期，报名不带过来。"""
+        item = self.current_item
+        if not item:
+            return
+        clone = item_repo.duplicate(item.id, days_shift=7)
+        if clone is None:
+            warn(self, "复制失败", "找不到这条内容，可能已经被删掉了。")
+            return
+        dlg = ItemDialog(self, clone)
+        dlg.setWindowTitle("再来一团（已复制上月内容，改改日期就能发）")
+        if not dlg.exec():
+            return
+        new_item = dlg.get_item()
+        new_item.source = new_item.source or "周期性开团"
+        item_repo.create(new_item)
+        self.refresh()
+        self.data_changed.emit()
+        self.progress_label.setText(f"已复制出《{new_item.title}》并顺延了截止日期，报名是空的")
 
     def _export_signups(self) -> None:
         item = self.current_item

@@ -85,6 +85,17 @@ def to_iso(dt: datetime | None) -> str:
     return dt.strftime("%Y-%m-%d %H:%M") if dt else ""
 
 
+def shift_days(text: str | None, days: int) -> str:
+    """把一个时间串整体往后挪 N 天（周期性开团顺延截止用）。
+
+    解析不出来就原样返回，绝不凭空造时间。
+    """
+    dt = parse_datetime(text)
+    if dt is None:
+        return text or ""
+    return to_iso(dt + timedelta(days=days))
+
+
 def humanize(iso_text: str | None, today: datetime | None = None) -> str:
     """把 ISO 串变成「今天 18:00」「10月5日」「已过期」这种口语表达。"""
     if not iso_text:

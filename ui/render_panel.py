@@ -41,6 +41,14 @@ from ui import theme
 from ui.widgets import confirm, hint_label, make_table, section_title, set_placeholder, warn
 from ui.workers import RenderWorker
 
+# v1.4.0：发团之后要发的四套文案（群公告/接龙/汇总都在发团之前）
+_AFTERSALE_KINDS = (
+    ("催报名（快截止了催一轮）", "remind"),
+    ("到货通知（列领取名单）", "arrival"),
+    ("催收结算（只点没结清的）", "chase"),
+    ("未成团说明（给邻居一个交代）", "fail"),
+)
+
 
 class TemplateDialog(QDialog):
     """卡片模板编辑：颜色、是否显示价格/二维码等。"""
@@ -239,6 +247,8 @@ class RenderPanel(QWidget):
         self.tabs.addTab(self._build_text_tab("announce"), "群公告")
         self.tabs.addTab(self._build_text_tab("solitaire"), "接龙模板")
         self.tabs.addTab(self._build_text_tab("digest"), "今日汇总")
+        # v1.4.0：发团之后的四套文案共用一个标签页，用下拉切换，避免标签挤成七个
+        self.tabs.addTab(self._build_text_tab("aftersale"), "售后文案")
         layout.addWidget(self.tabs, 1)
         return box
 
@@ -247,6 +257,18 @@ class RenderPanel(QWidget):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(6, 8, 6, 8)
         layout.setSpacing(8)
+
+        # 「售后文案」页多一个类型下拉：催报名 / 到货通知 / 催收结算 / 未成团
+        if key == "aftersale":
+            head = QHBoxLayout()
+            head.addWidget(QLabel("类型"))
+            combo = QComboBox()
+            for label, sub in _AFTERSALE_KINDS:
+                combo.addItem(label, sub)
+            combo.currentIndexChanged.connect(lambda *_: self._generate_text(key))
+            head.addWidget(combo, 1)
+            layout.insertLayout(0, head)
+            self._aftersale_combo = combo
 
         edit = QPlainTextEdit()
         edit.setReadOnly(True)
@@ -458,6 +480,28 @@ class RenderPanel(QWidget):
             for it in picked:
                 rows = signup_repo.list_for(it.id or 0)
                 chunks.append(copywriter.build_solitaire(it, rows))
+            edit.setPlainText("\n\n".join(chunks))
+        elif key == "aftersale":
+            sub = self._aftersale_combo.currentData() or "remind"
+            community = cfg.get("community_name", "")
+            operator = cfg.get("operator_name", "")
+            contact = cfg.get("contact_info", "")
+            chunks = []
+            for it in picked:
+                rows = signup_repo.list_for(it.id or 0)
+                signed = signup_repo.total_qty(it.id or 0)
+                if sub == "remind":
+                    chunks.append(copywriter.build_reminder(
+                        it, signed, community, operator))
+                elif sub == "arrival":
+                    chunks.append(copywriter.build_arrival_notice(
+                        it, rows, community, operator, contact))
+                elif sub == "chase":
+                    chunks.append(copywriter.build_settlement_chase(
+                        it, rows, community, operator, contact))
+                else:
+                    chunks.append(copywriter.build_fail_notice(
+                        it, signed, community, operator))
             edit.setPlainText("\n\n".join(chunks))
         else:
             edit.setPlainText(copywriter.build_digest(

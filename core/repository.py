@@ -1,6 +1,7 @@
 """数据访问层：所有 SQL 集中在这里，UI 和业务逻辑不直接写 SQL。"""
 from __future__ import annotations
 
+import re
 import sqlite3
 from datetime import datetime, timedelta
 from typing import Iterable
@@ -12,6 +13,7 @@ from .models import (
     Item,
     Signup,
     STATUS_ARCHIVED,
+    STATUS_DRAFT,
     STATUS_ENDING,
     STATUS_EXPIRED,
     WatchSource,
@@ -22,6 +24,17 @@ from . import utils
 
 def _now() -> str:
     return stamp()
+
+
+_ROUND_IN_TITLE = re.compile(r"第\s*(\d+)\s*期")
+
+
+def _next_round_title(title: str) -> str:
+    """标题里带「第N期」的自动 +1，没带的保持原样。"""
+    hit = _ROUND_IN_TITLE.search(title or "")
+    if not hit:
+        return title
+    return _ROUND_IN_TITLE.sub(f"第{int(hit.group(1)) + 1}期", title, count=1)
 
 
 # ===========================================================================
@@ -125,6 +138,37 @@ class ItemRepository:
                 self.create(it)
                 inserted += 1
         return inserted, skipped
+
+    # —— v1.4.0：周期性开团 ——
+
+    def duplicate(self, item_id: int, days_shift: int = 7) -> Item | None:
+        """复制一条内容开新一期，返回复制出来的草稿（未落库）。
+
+        每周/每月重复的团是团长最高频的动作，重录一遍同样的商品纯属浪费。
+        这里刻意改掉三样东西：身份（id/指纹）、发布痕迹、时间。
+        """
+        src = self.get(item_id)
+        if src is None:
+            return None
+        clone = Item(**{k: v for k, v in src.__dict__.items() if k != "id"})
+        clone.id = None
+        clone.status = STATUS_DRAFT
+        clone.collected = False
+        clone.published_at = ""
+        clone.created_at = ""
+        clone.updated_at = ""
+        # 新一期必须有自己的指纹，否则会被去重逻辑判成重复旧帖
+        clone.source_hash = f"dup-{item_id}-{int(datetime.now().timestamp())}"
+        clone.title = _next_round_title(src.title)
+
+        when = src.event_at if (src.kind == "event" and src.event_at) else src.deadline
+        if when and days_shift:
+            shifted = utils.shift_days(when, days_shift)
+            if src.event_at:
+                clone.event_at = shifted
+            if src.deadline:
+                clone.deadline = shifted
+        return clone
 
     def hash_exists(self, source_hash: str) -> bool:
         if not source_hash:
@@ -265,6 +309,33 @@ class SignupRepository:
                     )
                 added += 1
         return added
+
+    def apply_adjustments(self, item_id: int,
+                          adjustments: list[tuple[str, float | None]]) -> tuple[int, int]:
+        """处理改单与取消：[(名字, 新数量)]，数量为 None 表示这人不要了。
+
+        只对已经存在的记录生效——群里改单时人本来就在名单里，
+        找不到同名就跳过，绝不凭空造一条。
+        返回 (更新了多少条, 删了多少条)。
+        """
+        db = get_database()
+        updated = removed = 0
+        with db.transaction():
+            for name, qty in adjustments:
+                row = db.query_one(
+                    "SELECT * FROM signups WHERE item_id = ? AND name = ?",
+                    (item_id, name),
+                )
+                if not row:
+                    continue
+                if qty is None:
+                    db.execute("DELETE FROM signups WHERE id = ?", (row["id"],))
+                    removed += 1
+                else:
+                    db.execute("UPDATE signups SET qty = ? WHERE id = ?",
+                               (qty, row["id"]))
+                    updated += 1
+        return updated, removed
 
     # —— v1.3.0：结算 ——
 

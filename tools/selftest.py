@@ -383,6 +383,69 @@ def run_selftest() -> int:
         return (f"{len(rows)} 人：已结清 {s['done_people']} / 待结清 {s['wait_people']}"
                 f"，导出 {Path(path).name}")
 
+    def step_parse_dirty() -> str:
+        """真实群聊里的脏文本：时间戳、表情、闲聊、句中数量、改单取消。"""
+        text = ("2026年10月3日 22:14 1. 张三 2份\n"
+                "22:15 收到\n"
+                "👌\n"
+                "2、3栋王姐 1\n"
+                "李雷要3份\n"
+                "王五+1\n"
+                "张三改成3份\n"
+                "李四不要了")
+        res = copywriter.parse_solitaire_detail(text)
+        names = dict(res.rows)
+        assert names.get("张三") == 2.0, f"张三应 2 份，实际 {names.get('张三')}"
+        assert names.get("3栋王姐") == 1.0, "房号开头的名字被误判成数量了"
+        assert names.get("李雷") == 3.0, "句中数量没识别"
+        assert names.get("王五") == 1.0, "+1 没识别"
+        assert ("张三", 3.0) in res.adjustments, "改单没单独归类"
+        assert ("李四", None) in res.adjustments, "取消没单独归类"
+        assert res.skipped, "闲聊行应该被列出而不是凭空消失"
+        return (f"新增 {len(res.rows)} / 改单取消 {len(res.adjustments)}"
+                f" / 滤掉闲聊 {len(res.skipped)} 行")
+
+    def step_aftersale() -> str:
+        """v1.4.0：发团之后的四套文案，且该遮的必须遮住。"""
+        from core.models import Signup
+
+        probe = Item(title="自检团", kind="groupbuy", unit="份", price=10.0,
+                     quota=10, location="3栋1502自提", deadline="2026-10-20 18:00")
+        rows = [Signup(item_id=1, name="张三", qty=2.0, settled=True),
+                Signup(item_id=1, name="李雷", qty=1.0, settled=False)]
+
+        remind = copywriter.build_reminder(probe, 3.0)
+        arrival = copywriter.build_arrival_notice(probe, rows)
+        chase = copywriter.build_settlement_chase(probe, rows)
+        fail = copywriter.build_fail_notice(probe, 3.0)
+        for label, txt in (("催办", remind), ("到货", arrival),
+                           ("催收", chase), ("未成团", fail)):
+            assert txt.strip(), f"{label}文案生成出来是空的"
+
+        assert "1502" not in arrival, "到货通知里泄露了自提点房号"
+        assert "李雷" in chase and "张三" not in chase, "催收文案点错人了"
+        assert "20" in fail or "10" in fail, "未成团说明没说清目标"
+        return f"四套文案就绪；自提点已遮为 3栋***，催收只点尚未结清的 1 人"
+
+    def step_duplicate() -> str:
+        """周期性开团：复制出新一期，身份/时间要更新且不能带走上期报名。"""
+        assert inserted, "没有可用条目"
+        it = inserted[0]
+        before = len(item_repo.list_items(include_archived=True))
+
+        clone = item_repo.duplicate(it.id, days_shift=7)
+        assert clone is not None and clone.id is None, "复制出来还带着旧 id"
+        assert clone.source_hash != it.source_hash, "指纹没换会被去重拦掉"
+        assert clone.status == "draft", "新一期应该是草稿"
+
+        new_id = item_repo.create(clone)
+        assert len(item_repo.list_items(include_archived=True)) == before + 1
+        assert not signup_repo.list_for(new_id), "新一期带走了上期的报名"
+
+        item_repo.delete(new_id)   # 别污染后面的统计
+        assert len(item_repo.list_items(include_archived=True)) == before
+        return f"复制《{it.title}》为新草稿并顺延 7 天，报名不跟随"
+
     def step_backup() -> str:
         """备份与恢复：打包 → 删一条 → 恢复 → 数据得原样回来。"""
         from core import backup
@@ -448,9 +511,11 @@ def run_selftest() -> int:
     check("指纹去重", step_dedupe)
     check("状态自动流转", step_status)
     check("接龙登记与累加", step_signup)
+    check("接龙脏文本解析", step_parse_dirty)
     check("结算闭环", step_settlement)
     check("卡片渲染", step_render)
     check("文案生成", step_copy)
+    check("全周期文案", step_aftersale)
     check("对外脱敏", step_privacy)
     check("桌面通知", step_notifier)
     check("监控源盯梢", step_watch)
@@ -460,6 +525,7 @@ def run_selftest() -> int:
     check("统计查询", step_stats)
     check("图表渲染", step_charts)
     check("主窗口构建", step_ui)
+    check("周期性开团", step_duplicate)
     check("备份与恢复", step_backup)
 
     width = max(len(n) for n, _, _ in results)
