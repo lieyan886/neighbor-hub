@@ -117,7 +117,9 @@ def humanize(iso_text: str | None, today: datetime | None = None) -> str:
     elif diff <= 7:
         word = f"{diff}天后"
     else:
-        word = dt.strftime("%m月%d日")
+        # 不让汉字进 strftime：Windows 的 C locale 下 CRT 会把「月」编码失败，
+        # 抛 UnicodeEncodeError（Linux 的 UTF-8 locale 没事，所以这个坑只在 Windows 出现）
+        word = f"{dt.month}月{dt.day}日"
     tail = f" {hm}" if hm != "23:59" else ""
     return f"{word}{tail}"
 
