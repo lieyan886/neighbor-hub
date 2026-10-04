@@ -15,7 +15,7 @@ from typing import Iterator
 from . import config
 from .models import stamp
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS items (
@@ -107,6 +107,18 @@ CREATE TABLE IF NOT EXISTS watch_sources (
 CREATE INDEX IF NOT EXISTS idx_watch_enabled ON watch_sources(enabled);
 
 CREATE INDEX IF NOT EXISTS idx_logs_item ON publish_logs(item_id);
+
+-- v1.5.0：已提醒记录。以前只在内存里存一个 set，软件一重启就忘，
+-- 于是同一条内容会被重复弹好几次。落库后跨会话也只提醒一次。
+CREATE TABLE IF NOT EXISTS notified (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id     INTEGER NOT NULL,
+    kind        TEXT    NOT NULL,          -- due / formation / settle
+    notified_at TEXT    NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notified_unique
+    ON notified(item_id, kind);
+CREATE INDEX IF NOT EXISTS idx_notified_kind ON notified(kind);
 """
 
 DEFAULT_TEMPLATE_SQL = """

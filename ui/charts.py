@@ -109,6 +109,40 @@ def line_chart(labels: list[str], values: list[float], title: str = "") -> "obje
     return _to_pixmap(fig)
 
 
+def target_bar_chart(labels: list[str], done: list[float],
+                     targets: list[float], title: str = "") -> "object":
+    """完成量 vs 目标量：目标画成浅色底条，完成量叠在上面。
+
+    v1.5.0：以前看板只画了完成量，辛辛苦苦算出来的目标值没用上，
+    标题却写着「完成进度」——名不副实。这里真正把两者放在一起比。
+    """
+    _prepare_fonts()
+    if not labels:
+        labels, done, targets = ["暂无数据"], [0], [0]
+    fig, ax = plt.subplots(figsize=(5.2, 2.8))
+    x = range(len(labels))
+    # 目标条：宽、浅色，作为背景槽
+    ax.bar(list(x), targets, color=theme.BORDER, width=0.62, linewidth=0,
+           label="目标")
+    # 完成条：窄、实色，压在目标条上面
+    ax.bar(list(x), done, color=theme.ACCENT, width=0.38, linewidth=0,
+           label="已完成")
+    for i, (d, t) in enumerate(zip(done, targets)):
+        if t > 0:
+            ax.text(i, max(d, t), f"{d / t * 100:.0f}%", ha="center", va="bottom",
+                    color=theme.TEXT_MUTED, fontsize=9)
+        elif d > 0:
+            ax.text(i, d, f"{d:g}", ha="center", va="bottom",
+                    color=theme.TEXT_MUTED, fontsize=9)
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(labels, fontsize=9)
+    ax.set_ylim(0, max([max(done + [0]), max(targets + [0])] + [1]) * 1.25)
+    ax.legend(loc="upper right", frameon=False, fontsize=9,
+              labelcolor=theme.TEXT_MUTED)
+    _style_axes(ax, fig, title)
+    return _to_pixmap(fig)
+
+
 def horizontal_bar(labels: list[str], values: list[float], title: str = "") -> "object":
     """横向条形图：条目热度排行（标题长时用这个不打架）。"""
     _prepare_fonts()

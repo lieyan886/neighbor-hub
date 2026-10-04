@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -44,6 +45,18 @@ class StatsPanel(QWidget):
         head = QHBoxLayout()
         head.addWidget(section_title("数据看板"))
         head.addStretch(1)
+        # v1.5.0：时间范围 —— 以前所有数字都是全量聚合，看不出近期变化
+        self.range_combo = QComboBox()
+        self.range_combo.addItem("近 7 天", 7)
+        self.range_combo.addItem("近 30 天", 30)
+        self.range_combo.addItem("近 90 天", 90)
+        self.range_combo.addItem("近半年", 180)
+        self.range_combo.addItem("全部", None)
+        self.range_combo.setCurrentIndex(1)      # 默认近 30 天
+        self.range_combo.setFixedWidth(110)
+        self.range_combo.currentIndexChanged.connect(self.refresh)
+        head.addWidget(QLabel("统计范围"))
+        head.addWidget(self.range_combo)
         self.refresh_btn = QPushButton("刷新")
         self.refresh_btn.setProperty("variant", "ghost")
         self.refresh_btn.clicked.connect(self.refresh)
@@ -63,11 +76,12 @@ class StatsPanel(QWidget):
         self.cards_row.setSpacing(12)
         self.card_items = StatCard("内容总数", "0")
         self.card_active = StatCard("进行中", "0", theme.TEAL)
-        self.card_ending = StatCard("即将截止", "0", theme.AMBER)
-        self.card_people = StatCard("参与人次", "0", theme.ACCENT)
+        self.card_people = StatCard("参与人数", "0", theme.ACCENT)
         self.card_units = StatCard("累计份数", "0", theme.PURPLE)
-        for c in (self.card_items, self.card_active, self.card_ending,
-                  self.card_people, self.card_units):
+        self.card_rate = StatCard("成团率", "0%", theme.AMBER)
+        self.card_per = StatCard("人均份数", "0", theme.BLUE)
+        for c in (self.card_items, self.card_active, self.card_people,
+                  self.card_units, self.card_rate, self.card_per):
             self.cards_row.addWidget(c)
         root.addLayout(self.cards_row)
 
@@ -89,7 +103,7 @@ class StatsPanel(QWidget):
 
         grid.addWidget(self._card_box("内容类型分布", self.pie_label), 0, 0)
         grid.addWidget(self._card_box("近半年发布趋势", self.line_label), 0, 1)
-        grid.addWidget(self._card_box("各类型完成进度", self.bar_label), 1, 0)
+        grid.addWidget(self._card_box("完成量 vs 目标", self.bar_label), 1, 0)
         grid.addWidget(self._card_box("热度排行（按人次）", self.top_label), 1, 1)
         scroll.setWidget(body)
         root.addWidget(scroll, 1)
@@ -107,32 +121,68 @@ class StatsPanel(QWidget):
 
     # ============================ 数据 ============================
 
-    def refresh(self) -> None:
-        ov = stats_repo.overview()
-        self.card_items.set_value(str(ov["items"]))
-        self.card_active.set_value(str(ov["active"] + ov["ending"]))
-        self.card_ending.set_value(str(ov["ending"]))
-        self.card_people.set_value(str(ov["people"]))
-        self.card_units.set_value(format_price(
-            stats_repo.overview().get("signups", 0)))
+    @property
+    def _days(self) -> int | None:
+        return self.range_combo.currentData()
 
-        by_kind = stats_repo.count_by_kind()
+    def refresh(self) -> None:
+        days = self._days
+        ov = stats_repo.overview(days)
+        self.card_items.set_value(str(int(ov["items"])))
+        self.card_active.set_value(str(int(ov["active"]) + int(ov["ending"])))
+        self.card_people.set_value(str(int(ov["people"])))
+        # v1.5.0 修正：这里以前用的是 overview()['signups']（报名记录条数），
+        # 一人报 5 份只算 1，跟卡片标题「累计份数」不符。改用 units（SUM(qty)）。
+        self.card_units.set_value(format_price(ov["units"]))
+
+        fu = stats_repo.fulfillment(days)
+        self.card_rate.set_value(f"{fu['rate']:g}%")
+        self.card_rate.set_sub(f"{int(fu['formed'])}/{int(fu['total'])} 团凑够")
+
+        ov_all = stats_repo.overview(None)
+        per = ov["per_person"] or (ov_all["per_person"] if ov_all["people"] else 0)
+        self.card_per.set_value(format_price(per))
+
+        # 环比：本期 vs 上一个等长周期
+        cmp_ = stats_repo.compare(days or 30)
+        for card, key in ((self.card_items, "items"),
+                          (self.card_people, "people"),
+                          (self.card_units, "units")):
+            card.set_sub(*self._delta_text(cmp_.get(key, {})))
+
+        by_kind = stats_repo.count_by_kind(days)
         self.pie_label.setPixmap(charts.pie_chart(
             [kind_label(k) for k, _ in by_kind], [c for _, c in by_kind]))
 
-        trend = stats_repo.monthly_trend()
+        trend = stats_repo.monthly_trend(6 if not days or days >= 180 else 3)
         self.line_label.setPixmap(charts.line_chart(
             [l for l, _ in trend], [float(v) for _, v in trend]))
 
-        prog = stats_repo.kind_progress()
+        prog = stats_repo.kind_progress(days)
         labels = [kind_label(k) for k, _, _ in prog]
-        values = [int(done) for _, done, _ in prog]
-        targets = [int(t) for _, _, t in prog]
-        self.bar_label.setPixmap(charts.bar_chart(labels, values))
+        done = [float(d) for _, d, _ in prog]
+        targets = [float(t) for _, _, t in prog]
+        # v1.5.0：把目标值真正用上（以前只画 done，标题却写「完成进度」）
+        self.bar_label.setPixmap(charts.target_bar_chart(labels, done, targets))
 
-        tops = stats_repo.top_items()
+        tops = stats_repo.top_items(8, days)
         self.top_label.setPixmap(charts.horizontal_bar(
             [t for t, _, _ in tops], [float(h) for _, h, _ in tops]))
+
+    @staticmethod
+    def _delta_text(c: dict) -> tuple[str, str]:
+        """把环比结果转成 (文字, 颜色)。涨用红、跌用绿 —— 跟国内行情习惯一致。"""
+        delta = c.get("delta")
+        now, prev = c.get("now", 0), c.get("prev", 0)
+        if not now and not prev:
+            return "", theme.TEXT_MUTED          # 两期都空，不显示环比
+        if delta is None:
+            return "上期无数据" if not prev else "持平", theme.TEXT_MUTED
+        if delta > 0:
+            return f"↑ {delta:g}% 环比", theme.RED
+        if delta < 0:
+            return f"↓ {abs(delta):g}% 环比", theme.GREEN
+        return "持平", theme.TEXT_MUTED
 
     # ============================ 导出 ============================
 

@@ -174,6 +174,46 @@ def clean_text(text: str | None, limit: int = 0) -> str:
     return s[:limit] if limit and len(s) > limit else s
 
 
+# ===========================================================================
+# v1.5.0：群昵称归一化
+#
+# 真实群里同一个人会用好几种写法出现：「张三」「3栋张三」「张三妈妈」「张三 」。
+# 以前按名字精确匹配，于是同一户被记成三五个人 —— 份数被拆散，
+# 结算时对不上人。这里把写法归一，用于归并判断。
+# ===========================================================================
+
+# 房号前缀：「3栋」「12号楼」「5-2」这类，剥掉后剩下的才是人
+_HOUSE_PREFIX = re.compile(r"^\d+\s*(?:栋|幢|号楼|楼|座|单元|门|室|号)?\s*[-—]?\s*\d*\s*")
+# 亲属后缀：家人代报名时的常见写法
+_RELATION_SUFFIX = re.compile(
+    r"(?:妈妈|爸爸|母亲|父亲|妈|爸|老婆|老公|爱人|媳妇|太太|先生|女士|家属|本人)$"
+)
+_NOISE = re.compile(r"[^\w\u4e00-\u9fff]+")     # 空白、标点、emoji、@ 等一律去掉
+
+
+def normalize_name(name: str | None) -> str:
+    """把群昵称归一成可比较的核心名。
+
+    例：'3栋张三' -> '张三'；'张三妈妈 ' -> '张三'；' 张三 ' -> '张三'
+    注意：只做保守剥离，'王姐' 的「姐」是称呼不是后缀，不会被吃掉。
+    """
+    s = _NOISE.sub("", str(name or ""))
+    if not s:
+        return ""
+    s = _HOUSE_PREFIX.sub("", s)
+    # 只在剥离后仍有内容时才剥后缀，避免把「妈妈」这种昵称整个清空
+    stripped = _RELATION_SUFFIX.sub("", s)
+    return stripped if stripped else s
+
+
+def same_person(a: str | None, b: str | None) -> bool:
+    """两个群昵称是否可能是同一个人。"""
+    na, nb = normalize_name(a), normalize_name(b)
+    if not na or not nb:
+        return False
+    return na == nb
+
+
 def split_title_and_summary(text: str) -> tuple[str, str]:
     """把一行原始文本拆成标题和摘要，便于批量粘贴导入。"""
     s = clean_text(text)

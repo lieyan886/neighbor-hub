@@ -45,6 +45,9 @@ class Bridge(QObject):
 
     due_soon = Signal(object)
     status_changed = Signal(int)
+    # v1.5.0：除「临近截止」外，成团预警与结算逾期也要提醒
+    formation = Signal(object)     # [(Item, 提示语), ...]
+    settlement = Signal(object)    # [(Item, 未结清人数), ...]
     watch_found = Signal(object)
 
 
@@ -63,10 +66,14 @@ class MainWindow(QMainWindow):
         self.bridge.due_soon.connect(self._on_due_soon)
         self.bridge.status_changed.connect(self._on_status_changed)
         self.bridge.watch_found.connect(self._on_watch_found)
+        self.bridge.formation.connect(self._on_formation)
+        self.bridge.settlement.connect(self._on_settlement)
 
         self.reminder = ReminderService(
             on_due_soon=lambda items_: self.bridge.due_soon.emit(items_),
             on_status_changed=lambda n: self.bridge.status_changed.emit(n),
+            on_formation=lambda pairs: self.bridge.formation.emit(pairs),
+            on_settlement=lambda pairs: self.bridge.settlement.emit(pairs),
         )
         self.watcher = WatchService(
             on_updates=lambda changes: self.bridge.watch_found.emit(changes)
@@ -228,20 +235,33 @@ class MainWindow(QMainWindow):
         self.watcher.start()
 
     def _scan_now(self) -> None:
-        due = self.reminder.scan_now()
+        res = self.reminder.scan_now()
+        due = res["due"]            # type: ignore[index]
+        formation = res["formation"]  # type: ignore[index]
+        settle = res["settle"]      # type: ignore[index]
         self.manage.refresh()
         self._refresh_summary()
-        if not due:
-            self._set_status("检查完成：没有临近截止的内容")
-            self._maybe_notify("检查完成", "没有临近截止的内容")
+
+        total = len(due) + len(formation) + len(settle)
+        if not total:
+            self._set_status("检查完成：没有需要处理的提醒")
+            self._maybe_notify("检查完成", "没有需要处理的提醒")
             return
-        # 手动点「立即检查」时给一条汇总通知；后台定时扫描只发提醒不弹窗
-        self._maybe_notify(
-            f"{len(due)} 条内容即将截止",
-            "、".join(it.title for it in due[:5]) + ("…" if len(due) > 5 else ""),
-        )
-        self._refresh_summary()
-        self._set_status(f"{len(due)} 条内容即将截止，已在通知栏提醒")
+        # 手动点「立即检查」时给一条汇总通知，三类一起说清楚
+        parts = []
+        if due:
+            parts.append(f"{len(due)} 条即将截止")
+        if formation:
+            parts.append(f"{len(formation)} 条成团预警")
+        if settle:
+            parts.append(f"{len(settle)} 条结算待清")
+        summary = "、".join(parts)
+        names = [it.title for it in due] + [it.title for it, _ in formation]
+        detail = summary
+        if names:
+            detail += "：" + "、".join(names[:5]) + ("…" if len(names) > 5 else "")
+        self._maybe_notify(f"发现 {total} 处需要处理", detail)
+        self._set_status(f"{summary}，已在通知栏提醒")
 
     def _maybe_notify(self, title: str, message: str) -> bool:
         """按设置决定是否弹桌面通知（无 Qt/无托盘时静默失败）。"""
@@ -258,6 +278,33 @@ class MainWindow(QMainWindow):
             f"{len(items_)} 条内容快到截止了",
             "、".join(it.title for it in items_[:5]) + ("…" if len(items_) > 5 else ""),
         )
+        self._refresh_summary()
+
+    @Slot(object)
+    def _on_formation(self, pairs) -> None:
+        """成团预警：差几份就成团 / 时间过半还没动静。"""
+        if not pairs:
+            return
+        head = f"{len(pairs)} 条拼单需要关注成团进度"
+        body = "\n".join(f"· {it.title} —— {msg}" for it, msg in pairs[:5])
+        if len(pairs) > 5:
+            body += f"\n…还有 {len(pairs) - 5} 条"
+        self._maybe_notify(head, body)
+        self._set_status(head)
+        self._refresh_summary()
+
+    @Slot(object)
+    def _on_settlement(self, pairs) -> None:
+        """结算逾期：团结束了还有人没结清。数据来自 v1.3 的结算闭环。"""
+        if not pairs:
+            return
+        unpaid = sum(n for _, n in pairs)
+        head = f"{len(pairs)} 条内容还有 {unpaid} 人没结清"
+        body = "\n".join(f"· {it.title} —— {n} 人待结清" for it, n in pairs[:5])
+        if len(pairs) > 5:
+            body += f"\n…还有 {len(pairs) - 5} 条"
+        self._maybe_notify(head, body)
+        self._set_status(head)
         self._refresh_summary()
 
     @Slot(object)

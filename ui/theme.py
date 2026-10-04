@@ -18,6 +18,7 @@ TEAL = "#1D9E75"
 AMBER = "#EF9F27"
 BLUE = "#378ADD"
 RED = "#E24B4A"
+GREEN = "#2FA36B"       # 下降/向好：跟国内行情习惯一致（涨红跌绿）
 PURPLE = "#7F77DD"
 
 KIND_COLORS = {

@@ -9,6 +9,7 @@ import os
 import sys
 import tempfile
 import traceback
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # offscreen 模式下可以创建 Qt 对象而不弹窗，适合 CI / 命令行自检
@@ -227,7 +228,7 @@ def run_selftest() -> int:
         dlg = SettingsDialog(win)
         dlg.reject()
         win.close()
-        return f"主窗口构建并切换四个页面成功：{title}；设置对话框可打开"
+        return f"主窗口构建并切换五个页面成功：{title}；设置对话框可打开"
 
     def step_browser() -> str:
         """用本地 file:// 页面跑一次真 JS 渲染，不依赖外网。
@@ -446,6 +447,104 @@ def run_selftest() -> int:
         assert len(item_repo.list_items(include_archived=True)) == before
         return f"复制《{it.title}》为新草稿并顺延 7 天，报名不跟随"
 
+    def step_stats_deep() -> str:
+        """v1.5.0 看板深化，顺便把 v1.4 那三个「看着对、实际错」的 bug 钉死。"""
+        from core.models import Signup
+        from core.repository import _month_keys, stats
+
+        it = item_repo.list_items(include_archived=True)[0]
+        before = stats.overview()
+        signup_repo.add(Signup(item_id=it.id or 0, name="自检甲", qty=5))
+        signup_repo.add(Signup(item_id=it.id or 0, name="自检乙", qty=3))
+        after = stats.overview()
+
+        # bug #1：份数必须是 SUM(qty)，不能是记录条数
+        assert after["signups"] == before["signups"] + 2, "报名记录条数对不上"
+        assert abs((after["units"] - before["units"]) - 8.0) < 1e-6, (
+            "累计份数应多 8 份；若只多 2 说明又把记录条数当份数了")
+
+        # bug #2：月份序列不能重复、不能漏月
+        keys = _month_keys(6)
+        assert len(set(keys)) == 6, f"月份重复：{keys}"
+
+        # bug #3：目标份数必须算出来（不然「完成进度」名不副实）
+        prog = stats.kind_progress()
+        assert any(t > 0 for _k, _d, t in prog), "目标份数没统计出来"
+
+        # 时间范围必须真的收窄
+        assert int(stats.overview(30)["items"]) <= int(stats.overview(None)["items"])
+
+        # 新增：成团率与环比
+        fu = stats.fulfillment()
+        assert "rate" in fu and 0 <= fu["rate"] <= 100
+        cmp_ = stats.compare(30)
+        assert all("delta" in v for v in cmp_.values()), "环比缺少变化率"
+        return (f"份数 {after['units']:g}（+8），月份序列 {len(keys)} 项无重复，"
+                f"成团率 {fu['rate']:g}%，环比三指标齐全")
+
+    def step_alerts() -> str:
+        """v1.5.0 提醒扩维：成团预警 + 结算逾期 + 去重落库。"""
+        from core.models import Item, Signup
+        from core.scheduler import ReminderService
+        from core.repository import notified
+
+        # 成团预警：差一点点就成团
+        soon = Item(title="自检·快成团了", kind="groupbuy", unit="份", quota=10,
+                    status="active", source_hash="st-alert-1",
+                    deadline=(datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d %H:%M"))
+        soon.id = item_repo.create(soon)
+        signup_repo.add(Signup(item_id=soon.id or 0, name="甲", qty=9))
+        formation = {a.id: m for a, m in item_repo.formation_alerts()}
+        assert soon.id in formation, "快成团的拼单没被预警"
+        assert "还差 1 份" in formation[soon.id], formation[soon.id]
+
+        # 结算逾期：团结束了还有人没结清
+        end = Item(title="自检·已结束未结清", kind="groupbuy", unit="份", quota=5,
+                   status="expired", source_hash="st-alert-2")
+        end.id = item_repo.create(end)
+        signup_repo.add(Signup(item_id=end.id or 0, name="甲", qty=2, settled=True))
+        signup_repo.add(Signup(item_id=end.id or 0, name="乙", qty=1, settled=False))
+        overdue = {a.id: n for a, n in item_repo.settlement_overdue()}
+        assert end.id in overdue and overdue[end.id] == 1, "结算逾期没被识别"
+
+        # 去重：扫过一次不能再报
+        seen: list = []
+        svc = ReminderService(on_settlement=lambda pairs: seen.extend(pairs))
+        svc.scan()
+        first = len(seen)
+        svc.scan()
+        assert len(seen) == first, f"第二次扫描重复提醒（{first} → {len(seen)}）"
+        assert notified.has(end.id or 0, "settle"), "提醒没落库，重启后会重复弹"
+        return f"成团预警 1 条、结算逾期 1 条，去重后二次扫描 {first} 条不变"
+
+    def step_merge() -> str:
+        """v1.5.0 报名同名归并：「3栋张三」和「张三」是同一户。"""
+        from core.models import Item, Signup
+
+        it = Item(title="自检·归并", kind="groupbuy", unit="份", quota=100,
+                  status="active", source_hash="st-merge-1")
+        it.id = item_repo.create(it)
+        signup_repo.batch_add(it.id or 0,
+                              [("张三", 2.0), ("3栋张三", 3.0), ("李四", 1.0)])
+        rows = signup_repo.list_for(it.id or 0)
+        assert len(rows) == 2, f"应合并成 2 人，实际 {len(rows)}"
+        zs = [r for r in rows if r.name == "张三"][0]
+        assert abs(zs.qty - 5.0) < 1e-6, f"份数应累加到 5，实际 {zs.qty}"
+        assert "3栋张三" in (zs.note or ""), "别名没记进备注"
+
+        # 查重分组 + 手动合并
+        a = item_repo.list_items(include_archived=True)[0]
+        g1 = signup_repo.add(Signup(item_id=a.id or 0, name="王五", qty=2, settled=True))
+        g2 = signup_repo.add(Signup(item_id=a.id or 0, name="3栋王五", qty=3,
+                                    settled=False))
+        groups = signup_repo.duplicate_groups(a.id or 0)
+        assert groups and any(len(g) > 1 for g in groups), "没找出疑似同人的分组"
+        total = signup_repo.merge_signups(g1, [g2])
+        assert abs(total - 5.0) < 1e-6, f"合并后应为 5 份，实际 {total}"
+        left = [r for r in signup_repo.list_for(a.id or 0) if r.id == g1]
+        assert left and not left[0].settled, "有一条没结清就不该算结清"
+        return "「3栋张三」自动并入「张三」共 5 份；手动合并王五两组为 5 份且未结清"
+
     def step_backup() -> str:
         """备份与恢复：打包 → 删一条 → 恢复 → 数据得原样回来。"""
         from core import backup
@@ -527,6 +626,10 @@ def run_selftest() -> int:
     check("主窗口构建", step_ui)
     check("周期性开团", step_duplicate)
     check("备份与恢复", step_backup)
+    # —— v1.5.0 ——
+    check("看板深化与防回归", step_stats_deep)
+    check("提醒扩维", step_alerts)
+    check("报名同名归并", step_merge)
 
     width = max(len(n) for n, _, _ in results)
     print("\n=== 邻里圈自检报告 ===")

@@ -39,6 +39,7 @@ from core.utils import format_price, humanize, parse_datetime, to_iso
 from exports import excel
 from ui import theme
 from ui.item_dialog import ItemDialog
+from ui.merge_dialog import MergeDialog
 from ui.settle_dialog import SettleDialog
 from ui.signup_dialog import PasteSolitaireDialog, SignupDialog
 from ui.widgets import EmptyState, confirm, hint_label, make_table, warn
@@ -177,6 +178,11 @@ class ManagePanel(QWidget):
         self.dup_btn.setProperty("variant", "ghost")
         self.dup_btn.setToolTip("把这条内容复制成新一期：标题「第N期」自动+1、截止顺延 7 天、报名清空")
         self.dup_btn.clicked.connect(self._duplicate)
+        # v1.5.0：同一户在群里可能用好几种昵称报名，这里找出来让用户合并
+        self.merge_btn = QPushButton("查重归并")
+        self.merge_btn.setProperty("variant", "ghost")
+        self.merge_btn.setToolTip("找出「3栋张三」「张三妈妈」这类疑似同一个人的报名，合并份数")
+        self.merge_btn.clicked.connect(self._merge_duplicates)
         self.del_signup_btn = QPushButton("删除")
         self.del_signup_btn.setProperty("variant", "danger")
         self.del_signup_btn.clicked.connect(self._del_signup)
@@ -184,7 +190,7 @@ class ManagePanel(QWidget):
         self.export_btn.setProperty("variant", "ghost")
         self.export_btn.clicked.connect(self._export_signups)
         for b in (self.add_signup_btn, self.paste_btn, self.settle_btn,
-                  self.dup_btn, self.del_signup_btn, self.export_btn):
+                  self.dup_btn, self.merge_btn, self.del_signup_btn, self.export_btn):
             sign_head.addWidget(b)
 
         self.signup_table = make_table(("昵称/房号", "数量", "单位", "备注", "已结清"))
@@ -207,8 +213,8 @@ class ManagePanel(QWidget):
     def _set_detail_enabled(self, enabled: bool) -> None:
         for w in (self.edit_btn, self.publish_btn, self.archive_btn, self.delete_btn,
                   self.add_signup_btn, self.paste_btn, self.settle_btn,
-                  self.dup_btn, self.del_signup_btn, self.export_btn,
-                  self.signup_table):
+                  self.dup_btn, self.merge_btn, self.del_signup_btn,
+                  self.export_btn, self.signup_table):
             w.setEnabled(enabled)
 
     # ============================ 数据 ============================
@@ -457,6 +463,18 @@ class ManagePanel(QWidget):
             self._load_detail(item)
             self.refresh()
             self.data_changed.emit()
+
+    def _merge_duplicates(self) -> None:
+        """v1.5.0：找出疑似同一个人的报名，让用户确认后合并份数。"""
+        item = self.current_item
+        if not item:
+            return
+        dlg = MergeDialog(self, item)
+        if dlg.exec() and dlg.merged:
+            self._load_detail(item)
+            self.refresh()
+            self.data_changed.emit()
+            self.progress_label.setText(f"已合并 {dlg.merged} 组重复报名")
 
     def _duplicate(self) -> None:
         """周期性团购：把上一期整个复制成新一期，报名不带过来。"""

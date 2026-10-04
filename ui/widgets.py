@@ -64,13 +64,27 @@ class StatCard(QFrame):
             self.value_label.setStyleSheet(f"color: {color};")
         self.title_label = QLabel(title)
         self.title_label.setProperty("role", "stat-title")
+        # v1.5.0：副行，用来显示环比（↑12% / 持平 / 新增）
+        self.sub_label = QLabel("")
+        self.sub_label.setProperty("role", "stat-title")
+        self.sub_label.setVisible(False)
 
         layout.addWidget(self.value_label)
         layout.addWidget(self.title_label)
+        layout.addWidget(self.sub_label)
         layout.addStretch(1)
 
     def set_value(self, value: str) -> None:
         self.value_label.setText(str(value))
+
+    def set_sub(self, text: str, color: str | None = None) -> None:
+        """设置副行文字；传空字符串则隐藏。"""
+        self.sub_label.setText(text)
+        self.sub_label.setVisible(bool(text))
+        if color:
+            self.sub_label.setStyleSheet(f"color: {color};")
+        else:
+            self.sub_label.setStyleSheet("")
 
 
 class EmptyState(QWidget):
