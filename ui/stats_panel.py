@@ -105,6 +105,26 @@ class StatsPanel(QWidget):
         grid.addWidget(self._card_box("近半年发布趋势", self.line_label), 0, 1)
         grid.addWidget(self._card_box("完成量 vs 目标", self.bar_label), 1, 0)
         grid.addWidget(self._card_box("热度排行（按人次）", self.top_label), 1, 1)
+
+        # —— v1.7.0：价格走势 ——
+        self.price_combo = QComboBox()
+        self.price_combo.setToolTip(
+            "入库、改价、盯梢抓到新价都会自动记一笔，攒久了能看出真降还是先涨后降")
+        self.price_combo.currentIndexChanged.connect(self._refresh_price_chart)
+        self.price_label = QLabel()
+        self.price_label.setAlignment(Qt.AlignCenter)
+        self.price_label.setMinimumHeight(200)
+        self.price_hint = QLabel("")
+        self.price_hint.setProperty("role", "muted")
+        self.price_hint.setWordWrap(True)
+        price_inner = QWidget()
+        pv = QVBoxLayout(price_inner)
+        pv.setContentsMargins(0, 0, 0, 0)
+        pv.setSpacing(6)
+        pv.addWidget(self.price_combo)
+        pv.addWidget(self.price_label, 1)
+        pv.addWidget(self.price_hint)
+        grid.addWidget(self._card_box("价格走势", price_inner), 2, 0, 1, 2)
         scroll.setWidget(body)
         root.addWidget(scroll, 1)
 
@@ -168,6 +188,72 @@ class StatsPanel(QWidget):
         tops = stats_repo.top_items(8, days)
         self.top_label.setPixmap(charts.horizontal_bar(
             [t for t, _, _ in tops], [float(h) for _, h, _ in tops]))
+
+        self._load_price_subjects()
+        self._refresh_price_chart()
+
+    # ============================ 价格走势（v1.7.0） ============================
+
+    def _load_price_subjects(self) -> None:
+        """填充「看哪条内容的价格」下拉，尽量保住当前选择。"""
+        from core.repository import prices
+
+        current = self.price_combo.currentData()
+        self.price_combo.blockSignals(True)
+        self.price_combo.clear()
+        subs = prices.subjects()
+        if not subs:
+            self.price_combo.addItem("还没有价格记录", None)
+            self.price_combo.setEnabled(False)
+            self.price_combo.blockSignals(False)
+            return
+        self.price_combo.setEnabled(True)
+        for key, label, n in subs:
+            self.price_combo.addItem(f"{label}（{n} 个价格点）", key)
+        if current:
+            idx = self.price_combo.findData(current)
+            if idx >= 0:
+                self.price_combo.setCurrentIndex(idx)
+        self.price_combo.blockSignals(False)
+
+    def _refresh_price_chart(self) -> None:
+        from core.repository import prices
+
+        key = self.price_combo.currentData()
+        if not key:
+            self.price_label.clear()
+            self.price_hint.setText(
+                "入库、手动改价、盯梢抓到新价都会自动记一笔；现在还没有任何记录。")
+            return
+        if key.startswith("item:"):
+            iid: int | None = int(key.split(":", 1)[1])
+            title = ""
+        else:
+            iid, title = None, key.split(":", 1)[1]
+
+        seq = prices.series(iid, title)
+        if len(seq) < 2:
+            self.price_label.clear()
+            self.price_hint.setText("只有 1 个价格点，还画不出走势——下次改价或盯梢后再来看。")
+            return
+        # 横坐标只留日期，同一天多次改价也能看出当天的波动
+        labels = [(t[5:10] if len(t) >= 10 else t) for t, _ in seq]
+        self.price_label.setPixmap(charts.price_trend_chart(
+            labels, [p for _, p in seq]))
+
+        s = prices.summary(iid, title)
+        now, low, high, first = s["now"], s["low"], s["high"], s["first"]
+        if now <= low + 1e-6:
+            verdict = "现在是历史最低价，可以下手"
+        elif now >= high - 1e-6:
+            verdict = "现在是历史最高价，再等等"
+        elif now < first:
+            verdict = f"比首次记录（{format_price(first)}）便宜了"
+        else:
+            verdict = f"比首次记录（{format_price(first)}）还贵"
+        self.price_hint.setText(
+            f"当前 {format_price(now)}　最高 {format_price(high)}　"
+            f"最低 {format_price(low)}　共 {int(s['points'])} 次记录 —— {verdict}")
 
     @staticmethod
     def _delta_text(c: dict) -> tuple[str, str]:

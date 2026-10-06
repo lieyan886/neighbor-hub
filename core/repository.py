@@ -26,6 +26,27 @@ def _now() -> str:
     return stamp()
 
 
+def _record_price(item_id: int | None, title: str, price, origin_price=None,
+                  source: str = "", only_if_changed: bool = False) -> None:
+    """记一笔价格历史。
+
+    价格历史是「锦上添花」的旁支数据，写不进去绝不能让主流程失败，
+    所以这里把异常全部吞掉。
+    """
+    if price is None:
+        return
+    try:
+        if only_if_changed:
+            prices.record_if_changed(item_id, title, float(price),
+                                     float(origin_price) if origin_price else None,
+                                     source)
+        else:
+            prices.add(item_id, title, float(price),
+                       float(origin_price) if origin_price else None, source)
+    except Exception:
+        pass
+
+
 _ROUND_IN_TITLE = re.compile(r"第\s*(\d+)\s*期")
 
 
@@ -98,7 +119,11 @@ class ItemRepository:
         cur = get_database().execute(
             f"INSERT INTO items ({keys}) VALUES ({marks})", row
         )
-        return int(cur.lastrowid)
+        new_id = int(cur.lastrowid)
+        # v1.7.0：入库这一刻的价格就是历史第一笔——不记的话走势图永远是空的
+        _record_price(new_id, row.get("title", ""), row.get("price"),
+                      row.get("origin_price"), "collect")
+        return new_id
 
     def update(self, item: Item) -> None:
         """整条覆盖更新。
@@ -118,6 +143,9 @@ class ItemRepository:
         if not row.get("published_at"):
             old = self.get(item.id)
             row["published_at"] = old.published_at if old else ""
+        # 改价要留痕：团长要靠它判断「这次是真降了还是先涨后降」
+        _record_price(item.id, row.get("title", ""), row.get("price"),
+                      row.get("origin_price"), "manual", only_if_changed=True)
         sets = ", ".join(f"{k} = :{k}" for k in row if k != "id")
         get_database().execute(f"UPDATE items SET {sets} WHERE id = :id", row)
 
@@ -1008,6 +1036,110 @@ class NotifiedRepository:
         return int(cur.rowcount)
 
 
+class PriceHistoryRepository:
+    """v1.7.0：价格历史。
+
+    「这次是真便宜还是先涨后降」——只看当前价永远答不了这个问题。
+    三条记账入口：采集入库、手动改价、盯梢抓到变价。
+    """
+
+    def add(self, item_id: int | None, title: str = "", price: float | None = None,
+            origin_price: float | None = None, source: str = "",
+            noted_at: str = "") -> int:
+        """记一笔价格。价格为空就不记（没法画到图上，还得污染统计）。"""
+        if price is None:
+            return 0
+        cur = get_database().execute(
+            "INSERT INTO price_history (item_id, title, price, origin_price, "
+            "source, noted_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (item_id, title or "", float(price),
+             float(origin_price) if origin_price else None,
+             source or "manual", noted_at or _now()),
+        )
+        return int(cur.lastrowid)
+
+    def record_if_changed(self, item_id: int | None, title: str,
+                          price: float | None, origin_price: float | None = None,
+                          source: str = "") -> bool:
+        """价格跟上一笔不一样才记，避免每次保存条目都刷一堆重复点。"""
+        if price is None:
+            return False
+        last = self.last_price(item_id, title)
+        if last is not None and abs(last - float(price)) < 0.009:
+            return False
+        return self.add(item_id, title, price, origin_price, source) > 0
+
+    def last_price(self, item_id: int | None, title: str = "") -> float | None:
+        if item_id:
+            row = get_database().query_one(
+                "SELECT price FROM price_history WHERE item_id = ? "
+                "ORDER BY noted_at DESC, id DESC LIMIT 1", (item_id,))
+        else:
+            row = get_database().query_one(
+                "SELECT price FROM price_history WHERE item_id IS NULL AND title = ? "
+                "ORDER BY noted_at DESC, id DESC LIMIT 1", (title,))
+        if not row or row["price"] is None:
+            return None
+        return float(row["price"])
+
+    def series(self, item_id: int | None = None, title: str = "",
+               limit: int = 60) -> list[tuple[str, float]]:
+        """某条内容的价格序列（按时间正序），返回 [(时间点, 价格), ...]。"""
+        if item_id:
+            rows = get_database().query(
+                "SELECT noted_at, price FROM price_history WHERE item_id = ? "
+                "ORDER BY noted_at ASC, id ASC LIMIT ?", (item_id, int(limit)))
+        else:
+            rows = get_database().query(
+                "SELECT noted_at, price FROM price_history "
+                "WHERE item_id IS NULL AND title = ? "
+                "ORDER BY noted_at ASC, id ASC LIMIT ?", (title, int(limit)))
+        return [(r["noted_at"] or "", float(r["price"] or 0)) for r in rows]
+
+    def subjects(self, limit: int = 50) -> list[tuple[str, str, int]]:
+        """有哪些内容攒下了价格历史，返回 [(key, 显示名, 点数), ...]。
+
+        key 形如 `item:12` 或 `title:山姆牛肉卷`（监控源没入库时的兜底）。
+        """
+        rows = get_database().query(
+            "SELECT item_id, title, COUNT(*) AS c, MAX(noted_at) AS last "
+            "FROM price_history GROUP BY item_id, title "
+            "ORDER BY last DESC LIMIT ?", (int(limit),))
+        out: list[tuple[str, str, int]] = []
+        for r in rows:
+            iid = r["item_id"]
+            if iid:
+                key = f"item:{iid}"
+                label = (r["title"] or "").strip()
+                if not label:
+                    it = items.get(int(iid))
+                    label = it.title if it else f"#{iid}"
+            else:
+                key = f"title:{r['title']}"
+                label = f"{r['title']}（监控源）"
+            out.append((key, label, int(r["c"])))
+        return out
+
+    def summary(self, item_id: int | None = None, title: str = "") -> dict[str, float]:
+        """当前价 / 最高 / 最低 / 首价，用于给走势图配一句人话结论。"""
+        seq = [p for _, p in self.series(item_id, title)]
+        if not seq:
+            return {}
+        return {
+            "now": seq[-1],
+            "high": max(seq),
+            "low": min(seq),
+            "first": seq[0],
+            "points": float(len(seq)),
+        }
+
+    def prune(self, keep_days: int = 365) -> int:
+        edge = (datetime.now() - timedelta(days=keep_days)).strftime("%Y-%m-%d %H:%M:%S")
+        cur = get_database().execute(
+            "DELETE FROM price_history WHERE noted_at != '' AND noted_at < ?", (edge,))
+        return int(cur.rowcount)
+
+
 items = ItemRepository()
 signups = SignupRepository()
 templates = TemplateRepository()
@@ -1015,3 +1147,4 @@ publishes = PublishRepository()
 stats = StatsRepository()
 watch_sources = WatchRepository()
 notified = NotifiedRepository()
+prices = PriceHistoryRepository()

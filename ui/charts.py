@@ -109,6 +109,42 @@ def line_chart(labels: list[str], values: list[float], title: str = "") -> "obje
     return _to_pixmap(fig)
 
 
+def price_trend_chart(labels: list[str], values: list[float],
+                      title: str = "") -> "object":
+    """价格走势（v1.7.0）。
+
+    跟普通折线图的两点差别：
+    1. y 轴按数据范围自适应 —— 168 降到 158 这种幅度，从 0 起画会贴着底
+       变成一条直线，看不出降了没有；
+    2. 标出最高价与最低价，团长一眼能看出「现在是不是最低点」。
+    """
+    _prepare_fonts()
+    if not labels or not values:
+        labels, values = ["暂无数据"], [0]
+    fig, ax = plt.subplots(figsize=(6.4, 2.8))
+    ax.plot(range(len(values)), values, color=theme.ACCENT, linewidth=2, marker="o",
+            markersize=5, markerfacecolor=theme.SURFACE,
+            markeredgecolor=theme.ACCENT, markeredgewidth=1.6)
+    ax.fill_between(range(len(values)), values, color=theme.ACCENT, alpha=0.14)
+
+    lo, hi = min(values), max(values)
+    pad = max((hi - lo) * 0.35, hi * 0.04, 0.5)
+    ax.set_ylim(max(0.0, lo - pad), hi + pad)
+    ax.set_xticks(range(len(labels)))
+    ax.set_xticklabels(labels, rotation=0)
+    if len(labels) > 8:          # 点太多就隔一个显示，别糊成一片
+        for i, t in enumerate(ax.get_xticklabels()):
+            if i % 2:
+                t.set_visible(False)
+    for idx, val in ((values.index(hi), hi), (values.index(lo), lo)):
+        ax.annotate(f"{val:g}", (idx, val), textcoords="offset points",
+                    xytext=(0, 8 if val == hi else -14),
+                    ha="center", fontsize=9,
+                    color=theme.TEXT if val == hi else theme.GREEN)
+    _style_axes(ax, fig, title)
+    return _to_pixmap(fig)
+
+
 def target_bar_chart(labels: list[str], done: list[float],
                      targets: list[float], title: str = "") -> "object":
     """完成量 vs 目标量：目标画成浅色底条，完成量叠在上面。

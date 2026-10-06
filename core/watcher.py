@@ -171,6 +171,9 @@ class WatchService:
         settings = config.load_settings()
         if settings.get("watch_auto_import", False) and change.item is not None:
             item_id = self._upsert_item(change, src)
+        # v1.7.0：盯梢是价格历史最有价值的来源——自动抓下来的价格不会说谎，
+        # 攒几个月就能看出这个商家的「先涨后降」套路
+        self._record_price(change, src, item_id)
         watch_repo.save_snapshot(
             src.id,
             title=change.title or src.title,
@@ -181,6 +184,20 @@ class WatchService:
                 change.title, "", change.price, change.deadline),
             item_id=item_id,
         )
+
+    def _record_price(self, change: WatchChange, src: WatchSource,
+                      item_id: int | None) -> None:
+        """抓到的价格进历史。没关联条目就按标题记（监控源默认不自动入库）。"""
+        if change.price is None:
+            return
+        try:
+            from .repository import prices
+
+            prices.record_if_changed(
+                item_id, (change.title or src.title or "").strip(),
+                float(change.price), None, "watch")
+        except Exception:
+            pass
 
     def _upsert_item(self, change: WatchChange, src: WatchSource) -> int | None:
         """首次出现就新建条目；已存在就同步价格/截止。"""

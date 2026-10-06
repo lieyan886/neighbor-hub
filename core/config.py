@@ -11,7 +11,7 @@ from typing import Any
 
 # --- 版本常量 ---------------------------------------------------------------
 APP_NAME = "邻里圈"
-APP_VERSION = "1.6.0"                  # 语义化版本：主.次.修订
+APP_VERSION = "1.7.0"                  # 语义化版本：主.次.修订
 APP_TAGLINE = "社群运营工作台"
 # 单实例槽位名：第二个进程靠它唤醒第一个，而不是再开一个窗口
 IPC_NAME = "neighbor-hub-single-instance"

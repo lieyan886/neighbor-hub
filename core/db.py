@@ -15,7 +15,7 @@ from typing import Iterator
 from . import config
 from .models import stamp
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS items (
@@ -119,6 +119,23 @@ CREATE TABLE IF NOT EXISTS notified (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_notified_unique
     ON notified(item_id, kind);
 CREATE INDEX IF NOT EXISTS idx_notified_kind ON notified(kind);
+
+-- v1.7.0：价格历史。团长真正想知道的不是「现在多少钱」，
+-- 而是「这次是真便宜还是先涨后降」——只看当前价永远答不了这个问题。
+-- 每次入库 / 改价 / 盯梢抓到新价都记一笔。
+-- item_id 允许为空：监控源没开启自动入库时，只能按标题归到一起。
+CREATE TABLE IF NOT EXISTS price_history (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id      INTEGER REFERENCES items(id) ON DELETE CASCADE,
+    title        TEXT    NOT NULL DEFAULT '',
+    price        REAL,
+    origin_price REAL,
+    source       TEXT    NOT NULL DEFAULT '',   -- collect / manual / watch
+    noted_at     TEXT    NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_price_item ON price_history(item_id);
+CREATE INDEX IF NOT EXISTS idx_price_title ON price_history(title);
+CREATE INDEX IF NOT EXISTS idx_price_time ON price_history(noted_at);
 """
 
 DEFAULT_TEMPLATE_SQL = """

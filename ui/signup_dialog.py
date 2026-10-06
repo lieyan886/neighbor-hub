@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from core import config
 from core.models import Item, Signup
 from core.utils import clean_text
 from render.copywriter import (
@@ -174,7 +175,11 @@ class PasteSolitaireDialog(QDialog):
 
     def _parse(self) -> None:
         unit = self.unit_edit.text().strip() or "份"
-        self.result = parse_solitaire_detail(self.text_edit.toPlainText(), unit)
+        # 「我要2份」这种行解析不出人名，但团长自己接的龙就是他自己 ——
+        # 用设置里的署名补上，别让它掉进「认不出来」
+        self_name = config.load_settings().get("operator_name", "团长")
+        self.result = parse_solitaire_detail(self.text_edit.toPlainText(), unit,
+                                            self_name=self_name)
         self.rows = self.result.rows
         self._parsed = True
         self.table.setRowCount(0)

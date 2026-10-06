@@ -48,13 +48,18 @@ _MUL_QTY = re.compile(r"[xX×\*]\s*(\d+(?:\.\d+)?)")
 _NOT_A_NAME = re.compile(r"^(我|本人|自己|群主|团长|楼主|组织者|收货人|下单人)$")
 
 
-def _clean_name(text: str) -> str:
-    """把一段文本收拾成可用的人名；不是人名（纯符号/纯数字/代词）就返回空。"""
+def _clean_name(text: str, self_name: str = "") -> str:
+    """把一段文本收拾成可用的人名；不是人名（纯符号/纯数字/代词）就返回空。
+
+    self_name 是团长自己的昵称：「我要2份」这种行解析不出人名，但**知道**
+    就是团长本人接的龙。给了 self_name 就替成它，没给就退回「认不出来」。
+    """
+    raw = re.sub(r"[\s\W_]+", "", text or "")
     name = re.sub(r"\s+", " ", text or "").strip(" ，,、。.:：!！~-—")
     if not name or re.fullmatch(r"[\W_0-9]+", name):
-        return ""
+        return self_name if (self_name and _NOT_A_NAME.match(raw)) else ""
     if _NOT_A_NAME.match(name):
-        return ""
+        return self_name or ""
     return name
 
 
@@ -298,7 +303,8 @@ class ParseResult:
 
 
 def parse_solitaire_detail(text: str, unit: str = "份",
-                           default_qty: float = 1.0) -> ParseResult:
+                           default_qty: float = 1.0,
+                           self_name: str = "") -> ParseResult:
     """把群里回收的文本拆成三类：新增 / 改单取消 / 认不出来的。
 
     兼容的写法（比老版本宽得多）：
@@ -309,6 +315,9 @@ def parse_solitaire_detail(text: str, unit: str = "份",
         张三改成3份             # 改单（老版本会当成新加一个人）
         张三不要了              # 取消
         收到 / 👌 / 22:14 张三  # 自动滤掉闲聊、表情、微信时间戳
+
+    self_name：团长自己的昵称（设置里的「你的署名」）。给了之后，
+    「我要2份」「本人不要了」这类行就能落到团长名下，而不是被当成认不出来。
     """
     res = ParseResult()
     for raw in (text or "").splitlines():
@@ -332,14 +341,14 @@ def parse_solitaire_detail(text: str, unit: str = "份",
             continue
 
         if _CANCEL.search(compact):
-            name = _clean_name(_CANCEL.sub("", body))
+            name = _clean_name(_CANCEL.sub("", body), self_name)
             if name:
                 res.adjustments.append((name, None))
                 continue
 
         mod = _MODIFY.search(body)
         if mod:
-            name = _clean_name(body[: mod.start()])
+            name = _clean_name(body[: mod.start()], self_name)
             if name:
                 res.adjustments.append((name, float(mod.group(1))))
                 continue
@@ -362,7 +371,7 @@ def parse_solitaire_detail(text: str, unit: str = "份",
                     qty = float(hit.group(1))
                     body = body[: hit.start()].strip()
 
-        name = _clean_name(body)
+        name = _clean_name(body, self_name)
         if not name:
             res.skipped.append(raw.strip())
             continue
@@ -371,12 +380,13 @@ def parse_solitaire_detail(text: str, unit: str = "份",
 
 
 def parse_solitaire(text: str, unit: str = "份",
-                    default_qty: float = 1.0) -> list[tuple[str, float]]:
+                    default_qty: float = 1.0,
+                    self_name: str = "") -> list[tuple[str, float]]:
     """把群里回收的接龙文本拆成 [(名字, 数量), ...]。
 
     只要新增部分（改单/取消要区分开的用 parse_solitaire_detail）。
     """
-    return parse_solitaire_detail(text, unit, default_qty).rows
+    return parse_solitaire_detail(text, unit, default_qty, self_name).rows
 
 
 def dedupe_solitaire(rows: list[tuple[str, float]]) -> list[tuple[str, float]]:

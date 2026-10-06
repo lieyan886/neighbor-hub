@@ -51,6 +51,7 @@ class SettingsDialog(QDialog):
         self.community_edit = QLineEdit()
         set_placeholder(self.community_edit, "会印在卡片和文案上，建议用别名而非真实小区全名")
         self.operator_edit = QLineEdit()
+        set_placeholder(self.operator_edit, "如「3栋小李」；接龙里的「我要2份」也会记到这个名字下")
         self.contact_edit = QLineEdit()
         set_placeholder(self.contact_edit, "微信号或手机号，会渲染到卡片底部")
 

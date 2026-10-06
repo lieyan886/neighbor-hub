@@ -546,6 +546,37 @@ def run_selftest() -> int:
         assert left and not left[0].settled, "有一条没结清就不该算结清"
         return "「3栋张三」自动并入「张三」共 5 份；手动合并王五两组为 5 份且未结清"
 
+    def step_price_history() -> str:
+        """v1.7.0：价格历史 —— 回答「这次是真便宜还是先涨后降」。"""
+        from core.repository import prices
+
+        it = Item(title="自检·价格历史", kind="deal", unit="份", price=168.0,
+                  source_hash="st-price-1")
+        it.id = item_repo.create(it)
+        assert len(prices.series(it.id)) == 1, "入库没记首价"
+
+        it.price = 158.0
+        item_repo.update(it)
+        it.price = 178.0
+        item_repo.update(it)
+        seq = prices.series(it.id)
+        assert len(seq) == 3, f"两次改价该有 3 个点，实际 {len(seq)}"
+
+        item_repo.update(it)
+        assert len(prices.series(it.id)) == 3, "价格没变却多记了一笔"
+
+        s = prices.summary(it.id)
+        assert s["low"] == 158.0 and s["high"] == 178.0 and s["now"] == 178.0
+        subs = prices.subjects()
+        assert any(k == f"item:{it.id}" for k, _, _ in subs), "看板下拉里找不到这条"
+
+        # 接龙里的「我」要落到团长名下
+        rows = copywriter.parse_solitaire("我要2份\n李四 3份", self_name="3栋小李")
+        assert ("3栋小李", 2.0) in rows, f"「我」没记到团长名下：{rows}"
+        assert ("李四", 3.0) in rows
+        return (f"3 个价格点（{s['low']:g} ~ {s['high']:g}），重复保存不刷点；"
+                f"「我要2份」记为团长 2 份")
+
     def step_watch_fp() -> str:
         """v1.6.0：盯梢「判断变化」和「存快照」必须用同一个指纹。
 
@@ -744,6 +775,8 @@ def run_selftest() -> int:
     check("盯梢指纹不误报", step_watch_fp)
     check("再来一团按今天顺延", step_duplicate_fresh)
     check("看板口径与显示打磨", step_polish)
+    # —— v1.7.0 ——
+    check("价格历史", step_price_history)
 
     width = max(len(n) for n, _, _ in results)
     print("\n=== 邻里圈自检报告 ===")

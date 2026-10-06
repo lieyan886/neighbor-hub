@@ -110,15 +110,18 @@ def export_groupbuy_packing(items: list[Item], signups_map: dict[int, list],
     wb = Workbook()
     ws = wb.active
     ws.title = "提货清单"
-    ws.append(["所属拼单", "姓名/昵称", "联系方式", "数量", "单位", "已提货"])
+    # v1.7.0：加「备注」列 —— 自提时最常问的就是「他要的是辣口还是原味」，
+    # 以前这列只有界面上看得到，打印出来的清单上没有，志愿者还得回头翻软件
+    ws.append(["所属拼单", "姓名/昵称", "联系方式", "数量", "单位", "备注", "已提货"])
 
     for it in items:
         # 提货清单会给到团长/志愿者，同样按 export 口径脱敏
         for s in privacy.scrub_rows(signups_map.get(it.id or -1, []), scope="export"):
-            ws.append([it.title, s.name, s.contact, s.qty, s.unit or it.unit or "份", ""])
+            ws.append([it.title, s.name, s.contact, s.qty,
+                       s.unit or it.unit or "份", s.note, ""])
 
     _style_header(ws, {"所属拼单": 30, "姓名/昵称": 16, "联系方式": 16,
-                       "数量": 8, "单位": 8, "已提货": 10})
+                       "数量": 8, "单位": 8, "备注": 24, "已提货": 10})
 
     dest = Path(output_dir or config.EXPORT_DIR)
     dest.mkdir(parents=True, exist_ok=True)
