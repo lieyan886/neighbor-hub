@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/lieyan886/neighbor-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/lieyan886/neighbor-hub/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.5.0-blue.svg)](https://github.com/lieyan886/neighbor-hub/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.6.0-blue.svg)](https://github.com/lieyan886/neighbor-hub/releases/latest)
 
 给小区群主 / 团长用的桌面工具：**采集 → 管理 → 出图 → 发群**，一条流水线搞定社区活动、邻里拼单、周边优惠和羊毛信息的日常运营。
 
