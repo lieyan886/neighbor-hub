@@ -101,9 +101,23 @@ class ItemRepository:
         return int(cur.lastrowid)
 
     def update(self, item: Item) -> None:
+        """整条覆盖更新。
+
+        注意 created_at / published_at：这两个时间戳只在 create() 里写过，
+        模型对象上常常还是空字符串。直接拿 to_row() 拼 UPDATE 会把库里
+        已经存好的创建时间抹成 '' —— 而 created_at 是看板「近 N 天」
+        筛选的唯一定界字段，抹掉之后这条内容会直接从看板里消失。
+        所以这里让它们保持原值，除非调用方显式传了。
+        """
         row = item.to_row()
         row["updated_at"] = _now()
         row["id"] = item.id
+        if not row.get("created_at"):
+            old = self.get(item.id)
+            row["created_at"] = old.created_at if old else _now()
+        if not row.get("published_at"):
+            old = self.get(item.id)
+            row["published_at"] = old.published_at if old else ""
         sets = ", ".join(f"{k} = :{k}" for k in row if k != "id")
         get_database().execute(f"UPDATE items SET {sets} WHERE id = :id", row)
 
@@ -126,15 +140,16 @@ class ItemRepository:
         """批量写入，返回 (写入数, 因去重跳过的数量)。"""
         db = get_database()
         inserted, skipped = 0, 0
+        seen: set[str] = set()          # 本批次内部已经写过的指纹
         with db.transaction():
             for it in items:
-                if dedupe and self.hash_exists(it.source_hash):
-                    skipped += 1
-                    continue
-                # 同一批内部也可能重复
-                if dedupe and inserted and self.hash_exists(it.source_hash):
-                    skipped += 1
-                    continue
+                if dedupe and it.source_hash:
+                    # 先比库里，再比本批次 —— 以前「批次内去重」那行是死代码
+                    # （条件跟上一行一模一样），同一批重复链接照样写进去两遍
+                    if it.source_hash in seen or self.hash_exists(it.source_hash):
+                        skipped += 1
+                        continue
+                    seen.add(it.source_hash)
                 self.create(it)
                 inserted += 1
         return inserted, skipped
@@ -163,12 +178,28 @@ class ItemRepository:
 
         when = src.event_at if (src.kind == "event" and src.event_at) else src.deadline
         if when and days_shift:
-            shifted = utils.shift_days(when, days_shift)
+            shifted = self._shift_from_now(when, days_shift)
             if src.event_at:
                 clone.event_at = shifted
             if src.deadline:
                 clone.deadline = shifted
         return clone
+
+    @staticmethod
+    def _shift_from_now(when: str, days: int) -> str:
+        """把时间往后挪 N 天，但基准不早于今天。
+
+        v1.5.1 修正：以前直接拿旧的截止时间 +7 天。旧团是 9/1 截止、今天 10/5，
+        复制出来就成 9/8 —— 新一期一建好就是「已过期」，团长还得手动改日期。
+        真实场景里「再来一团」永远是「从今天起再开一周」，所以基准取二者较大值。
+        """
+        base = utils.parse_datetime(when)
+        if base is None:
+            return utils.shift_days(when, days)
+        now = datetime.now()
+        if base < now:
+            base = now
+        return utils.to_iso(base + timedelta(days=days))
 
     def hash_exists(self, source_hash: str) -> bool:
         if not source_hash:
@@ -256,19 +287,24 @@ class ItemRepository:
                     out.append((it, f"时间过半才 {pct:g}%（{got:g}/{quota:g}），该催了"))
         return out
 
-    def settlement_overdue(self) -> list[tuple[Item, int]]:
-        """结算逾期：团已经结束，但还有人没结清。
+    def settlement_overdue(self,
+                           idle_days: int | None = None) -> list[tuple[Item, int]]:
+        """结算逾期：团已经收尾，但还有人没结清。
 
         v1.3 做了结算闭环，数据躺在库里却没人提醒 —— 这里把它接上。
+        v1.5.1：不再只认 status='expired'，没填截止时间的团靠 _finished 判定，
+        否则线下自提那批永远催不到。
         返回 [(条目, 未结清人数), ...]。
         """
+        days = DEFAULT_IDLE_DAYS if idle_days is None else idle_days
         rows = get_database().query(
             "SELECT i.*, SUM(CASE WHEN s.settled = 0 THEN 1 ELSE 0 END) AS unpaid "
             "FROM items i JOIN signups s ON s.item_id = i.id "
-            "WHERE i.status = 'expired' GROUP BY i.id HAVING unpaid > 0 "
+            "WHERE i.status != 'archived' GROUP BY i.id HAVING unpaid > 0 "
             "ORDER BY unpaid DESC"
         )
-        return [(Item.from_row(r), int(r["unpaid"] or 0)) for r in rows]
+        return [(Item.from_row(r), int(r["unpaid"] or 0))
+                for r in rows if _finished(r, days)]
 
     def all_tags(self) -> list[str]:
         rows = get_database().query(
@@ -601,6 +637,52 @@ def _since(days: int | None) -> str:
     return (datetime.now() - timedelta(days=int(days))).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _bounds(days: int | None, offset_days: int = 0) -> tuple[str, str]:
+    """时间窗口的 (下界, 上界)；任一为空表示这一侧不限。
+
+    offset_days 把整段窗口往前推：offset=days 时正好是「上一个等长周期」，
+    环比才能拿到两个**不相交**的窗口（以前用 overview(2d) - overview(d) 相减，
+    人数这类 DISTINCT 指标会被抵消成 0，环比直接显示 +100%）。
+    """
+    end = datetime.now() - timedelta(days=int(offset_days or 0))
+    upper = end.strftime("%Y-%m-%d %H:%M:%S") if offset_days else ""
+    lower = (end - timedelta(days=int(days))).strftime("%Y-%m-%d %H:%M:%S") if days else ""
+    return lower, upper
+
+
+# 没填截止时间的团，开团超过这么多天就当收尾（用于结算催收与成团率）
+DEFAULT_IDLE_DAYS = 7
+
+
+def _finished(row, idle_days: int = DEFAULT_IDLE_DAYS) -> bool:
+    """这条内容算不算「已经收尾」。
+
+    真实场景里大量拼单是「线下自提、随到随取」，团长根本不填截止时间 ——
+    它们永远不会自动变成 expired，于是就算全员没结清也永远收不到提醒
+    （v1.5.0 的结算逾期只认 status='expired'）。规则放宽为三条：
+      · 状态已是 expired → 收尾
+      · 填了截止/活动时间且已过去 → 收尾
+      · 两者都没填 → 开团超过 idle_days 天算收尾
+    草稿与归档不算收尾：草稿还没开团，归档是用户主动收起来的。
+    """
+    keys = row.keys() if hasattr(row, "keys") else []
+    status = row["status"] if "status" in keys else ""
+    if status in (STATUS_ARCHIVED, STATUS_DRAFT):
+        return False
+    if status == STATUS_EXPIRED:
+        return True
+    end = (row["deadline"] if "deadline" in keys else "") or (
+        row["event_at"] if "event_at" in keys else "")
+    dt = utils.parse_datetime(end) if end else None
+    if dt is not None:
+        return dt < datetime.now()
+    created = row["created_at"] if "created_at" in keys else ""
+    cdt = utils.parse_datetime(created) if created else None
+    if cdt is None:
+        return False
+    return (datetime.now() - cdt).days >= max(1, int(idle_days))
+
+
 class StatsRepository:
     """看板用的聚合查询。
 
@@ -610,18 +692,23 @@ class StatsRepository:
 
     # —— 总览 ——
 
-    def overview(self, days: int | None = None) -> dict[str, float]:
+    def overview(self, days: int | None = None,
+                 offset_days: int = 0) -> dict[str, float]:
         """条目与报名的总览数字。
 
         v1.5.0 修正：signups 是「报名记录条数」，units 才是「累计份数」。
         以前看板把记录条数当份数显示（一人报 5 份只算 1），现在拆开了。
+        v1.5.1：offset_days 让「上一周期」成为一个独立的窗口（见 _bounds）。
         """
         db = get_database()
+        lower, upper = _bounds(days, offset_days)
         where, args = " WHERE status != 'archived'", []
-        since = _since(days)
-        if since:
+        if lower:
             where += " AND created_at >= ?"
-            args.append(since)
+            args.append(lower)
+        if upper:
+            where += " AND created_at < ?"
+            args.append(upper)
         row = db.query_one(
             "SELECT COUNT(*) AS items, "
             "SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active, "
@@ -631,19 +718,22 @@ class StatsRepository:
             f"FROM items{where}", args
         )
         # 报名的统计要跟条目同一时间口径：按关联条目的创建时间算
-        if since:
-            s_where = (" FROM signups s JOIN items i ON i.id = s.item_id "
-                       "WHERE i.status != 'archived' AND i.created_at >= ?")
-            s_args: list = [since]
-        else:
-            s_where = (" FROM signups s JOIN items i ON i.id = s.item_id "
-                       "WHERE i.status != 'archived'")
-            s_args = []
+        s_where = " FROM signups s JOIN items i ON i.id = s.item_id WHERE i.status != 'archived'"
+        s_args: list = []
+        if lower:
+            s_where += " AND i.created_at >= ?"
+            s_args.append(lower)
+        if upper:
+            s_where += " AND i.created_at < ?"
+            s_args.append(upper)
         total = db.query_one(f"SELECT COUNT(*) AS c{s_where}", s_args)
-        people = db.query_one(f"SELECT COUNT(DISTINCT s.name) AS c{s_where}", s_args)
+        # v1.5.1 修正：人数按归一化后的核心名去重，跟报名归并用同一套口径。
+        # 以前用 COUNT(DISTINCT name)，「张三」和「3栋张三」算两个人，
+        # 而管理台那边已经把它俩合并了 —— 两边数字对不上。
+        name_rows = db.query(f"SELECT DISTINCT s.name AS n{s_where}", s_args)
+        people_n = len({k for k in (utils.normalize_name(r["n"]) for r in name_rows) if k})
         units = db.query_one(f"SELECT COALESCE(SUM(s.qty), 0) AS c{s_where}", s_args)
         items_n = row["items"] or 0
-        people_n = people["c"] if people else 0
         units_n = float(units["c"]) if units else 0.0
         return {
             "items": items_n,
@@ -698,43 +788,73 @@ class StatsRepository:
         return [(r["title"], r["head"], float(r["qty"])) for r in rows]
 
     def kind_progress(self, days: int | None = None) -> list[tuple[str, float, float]]:
-        """各类型的 (已完成份数, 目标份数)，用于画「完成 vs 目标」对比。"""
-        where, args = " WHERE i.status != 'archived'", []
+        """各类型的 (已完成份数, 目标份数)，用于画「完成 vs 目标」对比。
+
+        v1.5.1 修正：以前 done 和 target 写在同一次 JOIN 里，一条团有 N 条报名
+        就把它的 quota 累加 N 遍（quota=10 + 3 条报名 → 目标显示 30）。
+        两个量必须各自独立聚合，不能共用一次扇出的 JOIN。
+        """
         since = _since(days)
+        args: list = []
+        # 字段必须带 i. 前缀：这条 SQL 会 JOIN signups，
+        # 两边都有 created_at，裸写会报 ambiguous column name
+        where = " WHERE i.status != 'archived'"
         if since:
             where += " AND i.created_at >= ?"
             args.append(since)
-        rows = get_database().query(
-            "SELECT i.kind, COALESCE(SUM(s.qty), 0) AS done, "
-            "SUM(COALESCE(NULLIF(i.quota, 0), 0)) AS target "
+
+        done_rows = get_database().query(
+            "SELECT i.kind AS kind, COALESCE(SUM(s.qty), 0) AS done "
             "FROM items i LEFT JOIN signups s ON s.item_id = i.id"
             f"{where} GROUP BY i.kind", args,
         )
-        return [(r["kind"], float(r["done"]), float(r["target"])) for r in rows]
+        target_rows = get_database().query(
+            "SELECT kind, COALESCE(SUM(COALESCE(quota, 0)), 0) AS target "
+            "FROM items i"
+            f"{where} GROUP BY kind", args,
+        )
+        done_map = {r["kind"]: float(r["done"] or 0) for r in done_rows}
+        target_map = {r["kind"]: float(r["target"] or 0) for r in target_rows}
+        out: list[tuple[str, float, float]] = []
+        for kind in sorted(set(done_map) | set(target_map)):
+            out.append((kind, done_map.get(kind, 0.0), target_map.get(kind, 0.0)))
+        return out
 
     # —— v1.5.0 新增 ——
 
     def fulfillment(self, days: int | None = None) -> dict[str, float]:
-        """成团率：设了目标份数的拼单里，有多少真的凑够了。
+        """成团率：已经收尾的拼单里，有多少真的凑够了目标。
 
         这是团长最关心的运营指标 —— 发团数不等于成团数。
+        v1.5.1 修正：以前把「还在进行中」的团也算进分母并按「没成团」计，
+        指标被系统性低估（刚开的团当然还没凑够）。成团率只看**已结束**的团，
+        进行中的单独报一个 ongoing 计数，别混在一起。
         """
-        since = _since(days)
-        where = " WHERE i.kind = 'groupbuy' AND i.quota > 0 AND i.status != 'archived'"
+        lower, upper = _bounds(days, 0)
+        where = (" WHERE i.kind = 'groupbuy' AND i.quota > 0 "
+                 "AND i.status != 'archived'")
         args: list = []
-        if since:
+        if lower:
             where += " AND i.created_at >= ?"
-            args.append(since)
+            args.append(lower)
+        if upper:
+            where += " AND i.created_at < ?"
+            args.append(upper)
         rows = get_database().query(
-            "SELECT i.id, i.quota, COALESCE(SUM(s.qty), 0) AS got "
+            "SELECT i.id, i.quota, i.status, i.deadline, i.event_at, i.created_at, "
+            "COALESCE(SUM(s.qty), 0) AS got "
             "FROM items i LEFT JOIN signups s ON s.item_id = i.id"
             f"{where} GROUP BY i.id", args,
         )
-        total = len(rows)
-        formed = sum(1 for r in rows if float(r["got"]) >= float(r["quota"] or 0))
+        finished = [r for r in rows if _finished(r, DEFAULT_IDLE_DAYS)]
+        ongoing = len(rows) - len(finished)
+        total = len(finished)
+        formed = sum(1 for r in finished
+                     if float(r["got"]) >= float(r["quota"] or 0))
         return {
             "total": float(total),
             "formed": float(formed),
+            "ongoing": float(ongoing),
             "rate": round(formed / total * 100, 1) if total else 0.0,
         }
 
@@ -744,13 +864,12 @@ class StatsRepository:
         返回 {'items': {'now': x, 'prev': y, 'delta': 百分比}, ...}
         delta 为 None 表示上期是 0（没法算增长率），UI 显示「新增」即可。
         """
-        cur = self.overview(days)
-        # 上一期 = 往前再推 days 天，取那一段的累计值
-        prev_total = self.overview(days * 2)
+        cur = self.overview(days, offset_days=0)
+        prev_win = self.overview(days, offset_days=days)
         out: dict[str, dict[str, float]] = {}
         for key in ("items", "people", "units"):
             now = float(cur.get(key, 0))
-            prev = float(prev_total.get(key, 0)) - now
+            prev = float(prev_win.get(key, 0))
             if prev <= 0:
                 delta = None if now <= 0 else 100.0
             else:
@@ -853,6 +972,19 @@ class NotifiedRepository:
             "INSERT OR REPLACE INTO notified (item_id, kind, notified_at) "
             "VALUES (?, ?, ?)", (item_id, kind, _now()),
         )
+
+    def age_hours(self, item_id: int, kind: str) -> float | None:
+        """距上次提醒过了多少小时；没提醒过返回 None。"""
+        row = get_database().query_one(
+            "SELECT notified_at FROM notified WHERE item_id = ? AND kind = ?",
+            (item_id, kind),
+        )
+        if not row or not row["notified_at"]:
+            return None
+        dt = utils.parse_datetime(row["notified_at"])
+        if dt is None:
+            return None
+        return (datetime.now() - dt).total_seconds() / 3600.0
 
     def forget(self, item_id: int, kind: str | None = None) -> None:
         if kind:

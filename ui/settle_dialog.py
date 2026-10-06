@@ -139,13 +139,20 @@ class SettleDialog(QDialog):
             return
         settled = cell.checkState() is Qt.Checked
         signup_repo.set_settled(self.item.id, settled, [int(signup_id)])
+        # 同步内存里的快照，否则「导出待结清」用的还是打开对话框那一刻的旧数据，
+        # 刚勾掉的人照样被列进催款名单 —— 群里催错人很难看。
+        for s in self.rows:
+            if s.id == int(signup_id):
+                s.settled = settled
+                break
         self._refresh_summary()
 
     def _mark_all(self, settled: bool) -> None:
         if not self.item:
             return
         word = "全部标记为已结清" if settled else "全部取消结清"
-        if not confirm(self, "批量结算", f"确定{word}吗？（共 {len(self.rows)} 条）"):
+        if not confirm(self, "批量结算", f"确定{word}吗？（共 {len(self.rows)} 条）",
+                       ok_text="确认" if settled else "确认取消"):
             return
         signup_repo.set_settled(self.item.id, settled)
         self.reload()
@@ -153,11 +160,13 @@ class SettleDialog(QDialog):
     def _export(self, only_unsettled: bool) -> None:
         if not self.item:
             return
-        if not self.rows:
+        # 用库里的最新状态，别用打开对话框时的快照（勾过几条之后快照就过期了）
+        rows = signup_repo.list_for(self.item.id or 0)
+        if not rows:
             warn(self, "没有数据", "这条内容还没有报名记录。")
             return
-        if only_unsettled and not any(not s.settled for s in self.rows):
+        if only_unsettled and not any(not s.settled for s in rows):
             info(self, "都已结清", "大家都结清了，没有待结清名单。")
             return
-        path = excel.export_settlement(self.item, self.rows, only_unsettled=only_unsettled)
+        path = excel.export_settlement(self.item, rows, only_unsettled=only_unsettled)
         info(self, "导出完成", f"已保存到：\n{path}")

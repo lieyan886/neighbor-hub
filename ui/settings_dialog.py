@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -28,6 +29,9 @@ _INTERVALS = (("15 分钟", 15), ("30 分钟", 30), ("1 小时", 60), ("2 小时
 
 class SettingsDialog(QDialog):
     """改完立即生效，重启后依然保留。"""
+
+    # 从备份恢复后库已经换了一份，所有面板都得重读 —— 主窗口接这个信号
+    restored = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -57,6 +61,13 @@ class SettingsDialog(QDialog):
         self.interval_combo = QComboBox()
         for label, val in _INTERVALS:
             self.interval_combo.addItem(label, val)
+        # 结算逾期跟「快截止了」不同：不处理就一直成立，只提醒一次等于放弃催收
+        self.settle_spin = QSpinBox()
+        self.settle_spin.setRange(0, 168)
+        self.settle_spin.setSuffix(" 小时后重催一次（0 = 只提醒一次）")
+        self.settle_spin.setToolTip(
+            "拼单结束后还有人没结清时，每隔这么久再提醒一次。"
+            "设为 0 表示只提醒一次，不再重复。")
 
         self.privacy_combo = QComboBox()
         for lv in privacy.LEVELS:
@@ -112,9 +123,11 @@ class SettingsDialog(QDialog):
         backup_row.addWidget(self.restore_btn)
         backup_row.addStretch(1)
 
-        self.uuid_note = QPushButton("恢复默认设置")
-        self.uuid_note.setProperty("variant", "danger")
-        self.uuid_note.clicked.connect(self._reset)
+        self.reset_btn = QPushButton("恢复默认设置")
+        self.reset_btn.setProperty("variant", "danger")
+        self.reset_btn.setToolTip("只是把默认值填回表单，点「保存」才生效")
+        self.reset_btn.clicked.connect(self._reset)
+        self._reset_hint = hint_label("")
 
         form.addRow("小区名称", self.community_edit)
         form.addRow("你的署名", self.operator_edit)
@@ -123,6 +136,7 @@ class SettingsDialog(QDialog):
         form.addRow("", self.enable_box)
         form.addRow("提醒窗口", self.remind_spin)
         form.addRow("扫描间隔", self.interval_combo)
+        form.addRow("结算催款", self.settle_spin)
         form.addRow("", self.cover_box)
         form.addRow("", self.browser_box)
         form.addRow("抓取超时", self.timeout_spin)
@@ -136,7 +150,9 @@ class SettingsDialog(QDialog):
         form.addRow(hint_label("数据备份（v1.3.0）"), QLabel(""))
         form.addRow(backup_box)
         form.addRow(hint_label("含数据库、设置与封面图；恢复前会自动给当前数据留档"))
+        form.addRow(self.reset_btn)
         layout.addLayout(form, 1)
+        layout.addWidget(self._reset_hint)
 
         box = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         box.button(QDialogButtonBox.Save).setText("保存")
@@ -157,6 +173,7 @@ class SettingsDialog(QDialog):
         self.remind_spin.setValue(int(c.get("remind_hours", 24)))
         idx = self.interval_combo.findData(int(c.get("scan_interval_minutes", 30)))
         self.interval_combo.setCurrentIndex(idx if idx >= 0 else 1)
+        self.settle_spin.setValue(int(c.get("settle_remind_hours", 24)))
         self.cover_box.setChecked(bool(c.get("auto_download_cover", True)))
         self.browser_box.setChecked(bool(c.get("browser_fallback", True)))
         self.timeout_spin.setValue(int(c.get("request_timeout", 12)))
@@ -176,6 +193,7 @@ class SettingsDialog(QDialog):
             "scheduler_enabled": self.enable_box.isChecked(),
             "remind_hours": int(self.remind_spin.value()),
             "scan_interval_minutes": int(self.interval_combo.currentData()),
+            "settle_remind_hours": int(self.settle_spin.value()),
             "auto_download_cover": self.cover_box.isChecked(),
             "browser_fallback": self.browser_box.isChecked(),
             "request_timeout": int(self.timeout_spin.value()),
@@ -215,7 +233,8 @@ class SettingsDialog(QDialog):
         else:
             desc = "（备份包里没有清单信息，无法预览内容）"
         if not confirm(self, "恢复备份",
-                       f"将用这个备份覆盖当前数据：\n\n{desc}\n\n继续吗？"):
+                       f"将用这个备份覆盖当前数据：\n\n{desc}\n\n继续吗？",
+                       ok_text="确认恢复"):
             return
         ok, msg = backup.restore_backup(path)
         if not ok:
@@ -223,8 +242,16 @@ class SettingsDialog(QDialog):
             return
         self.cfg = dict(config.reload_settings())
         self._load()
-        info(self, "恢复完成", f"{msg}\n\n建议重启软件，让所有界面重新载入。")
+        self.restored.emit()
+        info(self, "恢复完成", f"{msg}\n\n所有界面已重新载入。")
 
     def _reset(self) -> None:
-        self.cfg = config.reset_settings()
+        """恢复默认：只改内存里的副本，点「保存」才真的落盘。
+
+        以前一点就立刻写进 settings.json，用户反悔也回不去。
+        """
+        self.cfg = dict(config.DEFAULT_SETTINGS)
         self._load()
+        hint = getattr(self, "_reset_hint", None)
+        if hint is not None:
+            hint.setText("已载入默认设置，点「保存」才会生效；点「取消」可放弃。")

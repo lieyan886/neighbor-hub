@@ -17,6 +17,26 @@ from core import config
 from core.db import get_database
 
 
+def _already_running() -> bool:
+    """已经有实例在跑就唤醒它，返回 True（本进程应当直接退出）。
+
+    两个实例同时开，两边各写一份 SQLite，WAL 下容易出现互相覆盖的写入。
+    """
+    try:
+        from PySide6.QtNetwork import QLocalSocket
+    except ImportError:
+        return False
+    sock = QLocalSocket()
+    sock.connectToServer(config.IPC_NAME)
+    if not sock.waitForConnected(300):
+        return False
+    sock.write(b"show")
+    sock.flush()
+    sock.waitForBytesWritten(300)
+    sock.disconnectFromServer()
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(argv if argv is not None else sys.argv[1:])
     config.ensure_dirs()
@@ -60,6 +80,9 @@ def main(argv: list[str] | None = None) -> int:
     from ui.theme import apply as apply_theme
 
     get_database().initialize()
+
+    if _already_running():
+        return 0
 
     app = QApplication([sys.argv[0]] + [a for a in argv])
     app.setApplicationName("邻里圈 · 社群运营工作台")

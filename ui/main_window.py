@@ -82,6 +82,7 @@ class MainWindow(QMainWindow):
         self._build_panels()
         self._build_ui()
         self._build_tray()
+        self._build_ipc()
         self._start_timer()
         self._refresh_summary()
 
@@ -200,6 +201,18 @@ class MainWindow(QMainWindow):
         if ok and self.tray is not None:
             self.tray.messageClicked.connect(self._on_tray_clicked)
             self.tray.activated.connect(self._on_tray_activated)
+
+    def _build_ipc(self) -> None:
+        """占住单实例槽位：第二个进程启动时唤醒本窗口，而不是再开一份。"""
+        self._ipc = None
+        try:
+            from PySide6.QtNetwork import QLocalServer
+        except ImportError:
+            return
+        QLocalServer.removeServer(config.IPC_NAME)
+        self._ipc = QLocalServer(self)
+        self._ipc.newConnection.connect(self._restore_from_tray)
+        self._ipc.listen(config.IPC_NAME)
 
     def _restore_from_tray(self) -> None:
         self.show()
@@ -326,11 +339,20 @@ class MainWindow(QMainWindow):
 
     def _open_settings(self) -> None:
         dlg = SettingsDialog(self)
+        # 恢复备份后底层数据库已经换了一份，界面不重读就会显示旧/空数据
+        dlg.restored.connect(self._refresh_all_panels)
         if dlg.exec():
             self._restart_timer()
-            self.render.refresh_all()
-            self._refresh_summary()
+            self._refresh_all_panels()
             self._set_status("设置已保存")
+
+    def _refresh_all_panels(self) -> None:
+        """让四个面板重新读库（恢复备份、设置变更后用）。"""
+        self.manage.refresh()
+        self.render.refresh_all()
+        self.stats.refresh()
+        self.watch.refresh()
+        self._refresh_summary()
 
     def _refresh_summary(self) -> None:
         try:
@@ -349,8 +371,11 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt 接口
         cfg = config.load_settings()
-        # 开了「缩到托盘」且用户是点关闭按钮（不是托盘菜单退出）→ 只隐藏，程序继续跑
-        if cfg.get("minimize_to_tray", True) and not self._force_quit:
+        # 开了「缩到托盘」且用户是点关闭按钮（不是托盘菜单退出）→ 只隐藏，程序继续跑。
+        # 但托盘没起来时绝不能只 hide —— 那会留下一个没窗口没图标的幽灵进程，
+        # 只能去任务管理器杀。
+        if (cfg.get("minimize_to_tray", True) and not self._force_quit
+                and self.tray is not None):
             event.ignore()
             self.hide()
             self._maybe_notify("邻里圈在后台运行", "已缩到系统托盘，点图标可随时唤出")

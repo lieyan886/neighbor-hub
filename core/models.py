@@ -83,12 +83,6 @@ class Item:
         return utils.text_to_tags(self.tags)
 
     @property
-    def progress(self) -> tuple[float, float]:
-        """拼单/报名进度，返回 (已认领数量, 目标数量)。"""
-
-        return 0.0, float(self.quota or 0)
-
-    @property
     def deadline_text(self) -> str:
         if self.kind == KIND_EVENT and self.event_at:
             return utils.humanize(self.event_at)

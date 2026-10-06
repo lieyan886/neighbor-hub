@@ -15,7 +15,7 @@ from typing import Iterator
 from . import config
 from .models import stamp
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS items (

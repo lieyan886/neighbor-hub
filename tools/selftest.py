@@ -46,6 +46,7 @@ def run_selftest() -> int:
     from core.repository import signups as signup_repo
     from core.repository import stats as stats_repo
     from core.repository import templates as tpl_repo
+    from core import utils
     from core.utils import days_left, humanize, parse_datetime, parse_price
     from collectors import bulk_import
     from collectors.filters import ItemFilter
@@ -545,6 +546,115 @@ def run_selftest() -> int:
         assert left and not left[0].settled, "有一条没结清就不该算结清"
         return "「3栋张三」自动并入「张三」共 5 份；手动合并王五两组为 5 份且未结清"
 
+    def step_watch_fp() -> str:
+        """v1.6.0：盯梢「判断变化」和「存快照」必须用同一个指纹。
+
+        以前存的时候少传一个 summary 字段，两边永远算不出同样的值，
+        于是每隔一轮就误报一次「有新动静」——用户天天被假提醒吵醒。
+        """
+        from core.models import WatchSource
+        from core.repository import watch_sources as watch_repo
+        from core import watcher
+        from collectors import link_parser
+
+        src = WatchSource(url="https://example.com/deal/fp", note="自检·指纹",
+                          created_at="2026-10-05 10:00:00")
+        sid = watch_repo.create(src)
+        try:
+            svc = watcher.WatchService()
+            fields = []
+            times = []
+
+            class _FakeResult:
+                """固定不变的页面：三轮抓到的内容完全一样。"""
+                url = "https://example.com/deal/fp"
+                title = "车厘子 2斤"
+                summary = "顺丰冷链当天到"
+                source = "example"
+                local_cover = ""
+                price = 168.0
+                deadline = "2026-10-07 20:00"
+                tags: list = []
+                error = ""
+
+            def fake_scrape(url, download_cover=True, allow_browser=None, progress=None):
+                # 类体里引用不到外层函数的 url，这里单独挂上去
+                _FakeResult.url = url
+                return _FakeResult()
+
+            def fake_convert(res, kind=None):
+                return Item(title=res.title, summary=res.summary, url=res.url,
+                            price=res.price, deadline=res.deadline, kind="deal")
+
+            real_scrape, real_convert = link_parser.scrape_url, link_parser.convert_to_item
+            link_parser.scrape_url = fake_scrape        # type: ignore[assignment]
+            link_parser.convert_to_item = fake_convert  # type: ignore[assignment]
+            try:
+                for _ in range(3):
+                    ch = watcher.check_source(watch_repo.get(sid))
+                    assert not ch.error, ch.error
+                    times.append(ch.has_change)
+                    fields += ch.change_fields
+                    if ch.has_change:
+                        svc.apply(ch)
+            finally:
+                link_parser.scrape_url = real_scrape         # type: ignore[assignment]
+                link_parser.convert_to_item = real_convert   # type: ignore[assignment]
+
+            assert times == [True, False, False], f"页面没变却反复报变化：{times}"
+            return "连续 3 轮：第 1 轮首次抓到，后两轮零误报"
+        finally:
+            watch_repo.delete(sid)
+
+    def step_duplicate_fresh() -> str:
+        """v1.6.0：「再来一团」要从今天往后顺延，不能拿旧团截止再加 7 天。
+
+        旧逻辑会把 9/1 到期的团复制成 9/8——今天都 10 月了，新一期一建好
+        就是已过期状态，报名根本进不来。
+        """
+        from core.models import Signup
+
+        old = Item(title="自检·旧团", kind="groupbuy", unit="份", quota=20,
+                   status="expired", deadline="2026-10-01 18:00",
+                   source_hash="st-dup-old")
+        old.id = item_repo.create(old)
+        signup_repo.add(Signup(item_id=old.id or 0, name="甲", qty=3))
+
+        new = item_repo.duplicate(old.id or 0)
+        assert new is not None, "复制失败"
+        fresh = utils.parse_datetime(new.deadline or "")
+        assert fresh is not None, "新一期没有截止时间"
+        from datetime import datetime as _dt
+        ahead = (fresh.date() - _dt.now().date()).days
+        assert ahead >= 0, f"新一期还是已过期（{new.deadline}）"
+        assert ahead <= 14, f"顺延太久不合理：{ahead} 天后"
+        assert not signup_repo.list_for(new.id or 0), "报名不该跟随到新一期"
+        return f"旧团 10-01 到期 → 新一期排在 {ahead} 天后，报名未跟随"
+
+    def step_polish() -> str:
+        """v1.6.0：几处会让人看不懂 / 记错账的显示口径。"""
+        # 只填了日期就别显示「今天 00:00」（那看着像真约了零点）
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        text = utils.humanize(today.strftime("%Y-%m-%d %H:%M:%S"))
+        assert "00:00" not in text, f"没填时间却显示出了具体时刻：{text}"
+        # 填了时刻就照常带时间
+        with_time = humanize(datetime.now().replace(
+            hour=18, minute=30, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S"))
+        assert with_time.endswith("18:30"), with_time
+        # 「我要2份」不能记成一条叫「我」的报名
+        names = [n for n, _ in copywriter.parse_solitaire("我要2份\n李四 3份")]
+        assert "我" not in names, f"把「我」当人名记了：{names}"
+        assert "李四" in names, names
+        # 封面同名不互相覆盖
+        tmp_dir = tmp / "covers"
+        tmp_dir.mkdir(exist_ok=True)
+        first = tmp_dir / "IMG_001.jpg"
+        first.write_bytes(b"first")
+        second = utils.unique_path(tmp_dir / "IMG_001.jpg")
+        second.write_bytes(b"second")
+        assert first.read_bytes() == b"first", "同名封面被顶掉了"
+        return f"日期只显示「{text}」；「我要2份」不误记人名；同名封面落成 {second.name}"
+
     def step_backup() -> str:
         """备份与恢复：打包 → 删一条 → 恢复 → 数据得原样回来。"""
         from core import backup
@@ -630,6 +740,10 @@ def run_selftest() -> int:
     check("看板深化与防回归", step_stats_deep)
     check("提醒扩维", step_alerts)
     check("报名同名归并", step_merge)
+    # —— v1.6.0：审计修复 ——
+    check("盯梢指纹不误报", step_watch_fp)
+    check("再来一团按今天顺延", step_duplicate_fresh)
+    check("看板口径与显示打磨", step_polish)
 
     width = max(len(n) for n, _, _ in results)
     print("\n=== 邻里圈自检报告 ===")

@@ -11,8 +11,10 @@ from typing import Any
 
 # --- 版本常量 ---------------------------------------------------------------
 APP_NAME = "邻里圈"
-APP_VERSION = "1.5.0"                  # 语义化版本：主.次.修订
+APP_VERSION = "1.6.0"                  # 语义化版本：主.次.修订
 APP_TAGLINE = "社群运营工作台"
+# 单实例槽位名：第二个进程靠它唤醒第一个，而不是再开一个窗口
+IPC_NAME = "neighbor-hub-single-instance"
 
 # --- 路径常量 ---------------------------------------------------------------
 APP_ROOT = Path(__file__).resolve().parent.parent
@@ -43,6 +45,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "scheduler_enabled": True,
     "remind_hours": 24,                    # 截止前多少小时进入「即将截止」
     "scan_interval_minutes": 30,           # 定时扫描间隔
+    "settle_remind_hours": 24,             # 结算逾期每隔多少小时再催一次（不处理就一直催）
     # —— v1.2.0：后台常驻 ——
     "tray_enabled": True,                  # 是否显示系统托盘图标
     "notify_enabled": True,                # 是否弹桌面通知（气泡）

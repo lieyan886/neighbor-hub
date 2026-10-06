@@ -114,12 +114,20 @@ def read_manifest(zip_path: str | Path) -> dict[str, Any]:
 # ===========================================================================
 
 def _keep_current_snapshot() -> str:
-    """覆盖前把当前数据库与配置留一份档，返回留档路径说明。"""
+    """覆盖前把当前数据库与配置留一份档，返回留档路径说明。
+
+    数据库那份必须走 SQLite backup API —— 直接 copy2 一个开着 WAL 的库，
+    很可能拿到缺最后一段写入的文件，真需要回滚时才发现这份档是坏的
+    （本文件开头就是这么警告别人的，以前自己却没照做）。
+    """
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     kept: list[str] = []
     if config.DB_PATH.exists():
         guard = config.DB_PATH.with_name(f"{config.DB_PATH.stem}.before-restore-{stamp}.db")
-        shutil.copy2(config.DB_PATH, guard)
+        try:
+            _snapshot_db(guard)
+        except Exception:
+            shutil.copy2(config.DB_PATH, guard)   # 快照失败也不能不留档
         kept.append(guard.name)
     if config.SETTINGS_PATH.exists():
         guard_s = config.SETTINGS_PATH.with_name(

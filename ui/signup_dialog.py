@@ -26,7 +26,7 @@ from render.copywriter import (
     parse_solitaire_detail,
 )
 from ui import theme
-from ui.widgets import make_table
+from ui.widgets import make_table, warn
 
 _UNITS = ("份", "件", "斤", "箱", "人", "个", "袋", "盒")
 
@@ -96,6 +96,8 @@ class SignupDialog(QDialog):
 
     def _accept(self) -> None:
         if not self.name_edit.text().strip():
+            # 以前只把焦点挪过去，界面上一点反应没有，用户以为按钮坏了
+            warn(self, "还缺昵称", "填一下昵称或房号，不然这份报名不知道记给谁。")
             self.name_edit.setFocus()
             return
         self.accept()
@@ -119,6 +121,10 @@ class PasteSolitaireDialog(QDialog):
         self.item = item
         self.rows: list[tuple[str, float]] = []
         self.result: ParseResult = ParseResult()
+        # 有没有点过「解析预览」。不能用 `if not self.result` 判断 ——
+        # ParseResult 是 dataclass，空实例也是真值，那个条件永远不成立，
+        # 于是直接点「导入」时既不解析也不关窗，界面像卡死了。
+        self._parsed = False
         self.setWindowTitle("粘贴群接龙")
         self.resize(640, 560)
         self.setStyleSheet(theme.QSS)
@@ -170,6 +176,7 @@ class PasteSolitaireDialog(QDialog):
         unit = self.unit_edit.text().strip() or "份"
         self.result = parse_solitaire_detail(self.text_edit.toPlainText(), unit)
         self.rows = self.result.rows
+        self._parsed = True
         self.table.setRowCount(0)
 
         for name, qty in self.rows:
@@ -204,8 +211,11 @@ class PasteSolitaireDialog(QDialog):
         self.table.setItem(r, 2, tag)
 
     def accept(self) -> None:
-        if not self.result:
+        if not self._parsed:
             self._parse()
         if not self.rows and not self.result.adjustments:
+            warn(self, "没解析出人",
+                 "这段文本里没认出「昵称 + 份数」的接龙行。\n"
+                 "照着「1. 张三 2份」的格式粘一次，或点「解析预览」看看哪行被跳过了。")
             return
         super().accept()

@@ -383,8 +383,6 @@ class RenderPanel(QWidget):
         self.render_btn.setEnabled(True)
         self._progress.close()
         self.preview_count.setText(f"共 {len(paths)} 张")
-        for p in paths:
-            item = item_repo.get(self._item_id_of(p))
         if paths:
             self._last_paths = paths
         if getattr(self, "_push_after_render", False):

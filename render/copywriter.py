@@ -43,10 +43,17 @@ _PLUS_QTY = re.compile(r"[+＋]\s*(\d+(?:\.\d+)?)")
 _MUL_QTY = re.compile(r"[xX×\*]\s*(\d+(?:\.\d+)?)")
 
 
+# 「我要2份」这种是团长自己接的龙，解析出来名字只有一个「我」——
+# 误记成一条叫「我」的报名，后面导出名单时很扎眼。这类先挡掉。
+_NOT_A_NAME = re.compile(r"^(我|本人|自己|群主|团长|楼主|组织者|收货人|下单人)$")
+
+
 def _clean_name(text: str) -> str:
-    """把一段文本收拾成可用的人名；不是人名（纯符号/纯数字）就返回空。"""
+    """把一段文本收拾成可用的人名；不是人名（纯符号/纯数字/代词）就返回空。"""
     name = re.sub(r"\s+", " ", text or "").strip(" ，,、。.:：!！~-—")
     if not name or re.fullmatch(r"[\W_0-9]+", name):
+        return ""
+    if _NOT_A_NAME.match(name):
         return ""
     return name
 

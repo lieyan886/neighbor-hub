@@ -78,15 +78,33 @@ class ReminderService:
 
     # —— 去重 ——
 
-    def _fresh(self, item_id: int | None, kind: str) -> bool:
-        """这条提醒要不要发：内存 + 数据库两层去重。"""
+    def _fresh(self, item_id: int | None, kind: str, force: bool = False) -> bool:
+        """这条提醒要不要发：内存 + 数据库两层去重。
+
+        force=True 用于「立即检查」—— 手动点的时候用户要看的是**当下**的情况，
+        不能因为半小时前已经弹过一次就永远显示「没有需要处理的提醒」。
+
+        结算逾期是个例外：它跟「临近截止」不同，事情不处理就一直成立。
+        只提醒一次等于放弃催收，所以隔 settle_remind_hours 小时会再提一次。
+        """
         if item_id is None:
             return False
+        if force:
+            return True
         key = (item_id, kind)
         if key in self._notified:
             return False
         try:
             if notified.has(item_id, kind):
+                if kind == KIND_SETTLE:
+                    again = int(config.load_settings().get("settle_remind_hours", 24))
+                    # 0 = 用户关掉了重复催收，那就老实只提醒一次
+                    if again <= 0:
+                        self._notified.add(key)
+                        return False
+                    age = notified.age_hours(item_id, kind)
+                    if age is not None and age >= again:
+                        return True     # 还没结清，该再催一次
                 self._notified.add(key)
                 return False
         except Exception:
@@ -176,9 +194,11 @@ class ReminderService:
         except Exception:
             pass
 
-    def scan_now(self) -> dict[str, object]:
+    def scan_now(self, force: bool = True) -> dict[str, object]:
         """手动触发一次扫描（UI 上的「立即检查」按钮）。
 
+        默认 force=True：手动点要看的是当下还有多少事没处理，
+        不能因为半小时前弹过一次就一直回「没有需要处理的提醒」。
         返回三类提醒的结果，方便 UI 一次性展示。
         """
         settings = config.load_settings()
@@ -191,17 +211,17 @@ class ReminderService:
             changed = 0
 
         due = [it for it in items.due_soon(remind_hours)
-               if self._fresh(it.id, KIND_DUE)]
+               if self._fresh(it.id, KIND_DUE, force)]
         for it in due:
             self._mark(it.id, KIND_DUE)
 
         formation = [(it, m) for it, m in items.formation_alerts()
-                     if self._fresh(it.id, KIND_FORMATION)]
+                     if self._fresh(it.id, KIND_FORMATION, force)]
         for it, _ in formation:
             self._mark(it.id, KIND_FORMATION)
 
         settle = [(it, n) for it, n in items.settlement_overdue()
-                  if self._fresh(it.id, KIND_SETTLE)]
+                  if self._fresh(it.id, KIND_SETTLE, force)]
         for it, _ in settle:
             self._mark(it.id, KIND_SETTLE)
 

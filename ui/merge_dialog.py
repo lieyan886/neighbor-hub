@@ -119,7 +119,8 @@ class MergeDialog(QDialog):
             return
         if not confirm(self, "确认合并",
                        "合并后份数相加、结清状态取「都结清才算结清」，"
-                       "被合并的记录会删除。继续？"):
+                       "被合并的记录会删除。继续？",
+                       ok_text="确认合并"):
             return
         done = 0
         for box in self.boxes:

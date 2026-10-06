@@ -33,7 +33,7 @@ from core.models import (
     STATUS_EXPIRED,
     Item,
 )
-from core.utils import parse_datetime, to_iso
+from core.utils import parse_datetime, to_iso, unique_path
 from ui import theme
 
 _STATUS_ORDER = (STATUS_DRAFT, STATUS_ACTIVE, "ending", STATUS_EXPIRED, STATUS_ARCHIVED)
@@ -207,7 +207,7 @@ class ItemDialog(QDialog):
         if not path:
             return
         config.ensure_dirs()
-        dest = config.COVER_DIR / Path(path).name
+        dest = unique_path(config.COVER_DIR / Path(path).name)
         try:
             shutil.copy(path, dest)
             self._set_cover(str(dest))
@@ -217,6 +217,7 @@ class ItemDialog(QDialog):
     def _accept(self) -> None:
         title = self.title_edit.text().strip()
         if not title:
+            warn(self, "标题不能为空", "这条内容还叫不出名字，先填个标题。")
             self.title_edit.setFocus()
             return
         self._title_ok = True

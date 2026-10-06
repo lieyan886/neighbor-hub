@@ -149,18 +149,40 @@ def set_placeholder(widget, text: str) -> None:
         pass
 
 
-def confirm(parent: QWidget, title: str, text: str) -> bool:
-    """危险操作确认框。"""
+def confirm(parent: QWidget, title: str, text: str,
+            ok_text: str = "确认删除") -> bool:
+    """危险操作确认框。
+
+    ok_text 必须按实际操作给 —— 以前按钮写死「确认删除」，可这个框也被
+    合并报名、批量结算、恢复备份复用，用户点「合并」却看到「确认删除」。
+    """
     box = QMessageBox(parent)
     box.setWindowTitle(title)
     box.setText(text)
     box.setIcon(QMessageBox.Warning)
     box.setStyleSheet(theme.QSS)
-    yes = box.addButton("确认删除", QMessageBox.AcceptRole)
+    yes = box.addButton(ok_text, QMessageBox.AcceptRole)
     no = box.addButton("取消", QMessageBox.RejectRole)
     box.setDefaultButton(no)
     box.exec()
     return box.clickedButton() is yes
+
+
+def copyable_info(parent: QWidget, title: str, text: str) -> bool:
+    """带「复制到剪贴板」按钮的信息框，返回用户是否点了复制。
+
+    不静默写剪贴板：用户可能刚复制了别的东西要贴到群里。
+    """
+    box = QMessageBox(parent)
+    box.setWindowTitle(title)
+    box.setText(text)
+    box.setIcon(QMessageBox.Information)
+    box.setStyleSheet(theme.QSS)
+    copy_btn = box.addButton("复制到剪贴板", QMessageBox.AcceptRole)
+    box.addButton("关闭", QMessageBox.RejectRole)
+    box.setDefaultButton(copy_btn)
+    box.exec()
+    return box.clickedButton() is copy_btn
 
 
 def info(parent: QWidget, title: str, text: str) -> None:

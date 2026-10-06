@@ -24,7 +24,8 @@ from core import config, utils
 from core.models import WatchSource, stamp
 from core.repository import watch_sources as repo
 from ui import theme
-from ui.widgets import confirm, hint_label, info, make_table, section_title, set_row
+from ui.widgets import confirm, copyable_info, hint_label, info, make_table
+from ui.widgets import section_title, set_row
 from ui.workers import WatchWorker
 
 
@@ -219,6 +220,7 @@ class WatchPanel(QWidget):
         more = f"\n…还有 {len(changes) - 8} 条" if len(changes) > 8 else ""
         text = "\n".join(lines) + more
         self.status_label.setText(f"发现 {len(changes)} 处更新：{lines[0]}")
-        QApplication.clipboard().setText(text)
-        info(self, "盯梢结果",
-             f"发现 {len(changes)} 处更新（已复制到剪贴板）：\n\n{text}")
+        # 不静默覆盖剪贴板 —— 用户很可能刚复制了要发群的东西
+        if copyable_info(self, "盯梢结果", f"发现 {len(changes)} 处更新：\n\n{text}"):
+            QApplication.clipboard().setText(text)
+            self.status_label.setText("盯梢结果已复制到剪贴板")

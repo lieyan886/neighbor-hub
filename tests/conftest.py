@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,28 @@ def isolated_data(tmp_path_factory):
 
     get_database(config.DB_PATH).initialize()
     return tmp
+
+
+@pytest.fixture
+def solo_data(isolated_data):
+    """把全局库临时换成一个干净文件，跑完还原。
+
+    会话级 DB 是所有用例共享的，像「分母恰好等于几」「库里是不是就一条」
+    这种精确断言会被前面用例的数据污染（真踩过：成团率算出 3 而不是 2）。
+    """
+    from core import config
+    from core.db import get_database, reset_database
+
+    original = config.DB_PATH
+    fresh = config.DATA_DIR / f"solo-{time.time_ns()}.db"
+    reset_database()
+    config.DB_PATH = fresh
+    db = get_database(fresh)
+    db.initialize()
+    yield fresh
+    config.DB_PATH = original
+    reset_database()
+    get_database(original).initialize()
 
 
 @pytest.fixture(scope="session")

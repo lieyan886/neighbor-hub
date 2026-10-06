@@ -325,21 +325,27 @@ class CollectPanel(QWidget):
         if not result.kept:
             warn(self, "一条都没留下", "\n".join(f"{i.title}：{why}" for i, why in result.dropped[:8]))
             return
+        # 勾了「去重」就要真的去重：以前这里写死 dedupe=False，
+        # 每周抓同一批链接照样重复入库，库里一堆同名条目。
         try:
-            item_repo.bulk_insert(result.kept, dedupe=False)
+            inserted, skipped = item_repo.bulk_insert(
+                result.kept, dedupe=self.dedupe_box.isChecked())
         except Exception as exc:
             warn(self, "入库失败", str(exc))
             return
 
+        # 被去重跳过的条目要从候选里撤掉，否则还留在表里等下次再点一次
         for it in result.kept:
             self._remove_candidate(it)
-        msg = f"已入库 {len(result.kept)} 条"
+        msg = f"已入库 {inserted} 条"
+        if skipped:
+            msg += f"，去重跳过 {skipped} 条"
         if result.dropped:
             msg += f"，过滤掉 {len(result.dropped)} 条（" + "、".join(
                 sorted({why for _, why in result.dropped})[:3]
             ) + "）"
         self.status_label.setText(msg)
-        self.items_imported.emit(len(result.kept))
+        self.items_imported.emit(inserted)
 
     def _remove_candidate(self, item: Item) -> None:
         if item in self.candidates:

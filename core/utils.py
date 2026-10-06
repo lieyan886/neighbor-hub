@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import re
 from datetime import datetime, timedelta
+from pathlib import Path
 
 # --- 时间解析 ---------------------------------------------------------------
 
@@ -120,7 +121,9 @@ def humanize(iso_text: str | None, today: datetime | None = None) -> str:
         # 不让汉字进 strftime：Windows 的 C locale 下 CRT 会把「月」编码失败，
         # 抛 UnicodeEncodeError（Linux 的 UTF-8 locale 没事，所以这个坑只在 Windows 出现）
         word = f"{dt.month}月{dt.day}日"
-    tail = f" {hm}" if hm != "23:59" else ""
+    # 00:00 说明用户只填了日期没填时间（解析时补的零），显示「今天 00:00」
+    # 反而像真的定了零点，直接把时间省掉
+    tail = f" {hm}" if hm not in ("23:59", "00:00") else ""
     return f"{word}{tail}"
 
 
@@ -229,6 +232,25 @@ def fingerprint(*parts: str) -> str:
     """生成去重指纹，用于「同一条优惠别采两遍」。"""
     base = "|".join(p for p in parts if p)
     return hashlib.sha1(base.encode("utf-8")).hexdigest()[:16]
+
+
+def unique_path(path: str | Path) -> Path:
+    """同名的文件别互相覆盖：已经存在就换成 name (2).jpg 这种。
+
+    手动选封面时，用户挑的两张图可能就叫 IMG_001.jpg，直接 copy 会把
+    上一张的封面悄悄顶掉，事后根本查不出来。
+    """
+    p = Path(path)
+    if not p.exists():
+        return p
+    stem, suffix = p.stem, p.suffix
+    parent = p.parent
+    n = 2
+    while True:
+        cand = parent / f"{stem} ({n}){suffix}"
+        if not cand.exists():
+            return cand
+        n += 1
 
 
 def tags_to_text(tags: list[str]) -> str:

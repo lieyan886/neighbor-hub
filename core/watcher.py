@@ -30,6 +30,10 @@ class WatchChange:
     title: str = ""
     price: float | None = None
     deadline: str = ""
+    # 本轮算出的指纹。存下来是为了让 apply() 回写时用「同一个指纹」——
+    # 以前 apply() 自己重算时少传了 summary，算出来的和 check_source 不一样，
+    # 于是每扫一轮都误判「页面有动静」，用户天天收到假提醒。
+    content_hash: str = ""
     change_fields: list[str] = field(default_factory=list)
     first_seen: bool = False       # 首次抓取也算「有情况」，好让人知道盯梢是不是生效了
     error: str = ""
@@ -82,7 +86,7 @@ def check_source(src: WatchSource) -> WatchChange:
     new_hash = fingerprint_of(title, summary, price, deadline)
 
     change = WatchChange(source=src, item=item, title=title, price=price,
-                         deadline=deadline)
+                         deadline=deadline, content_hash=new_hash)
 
     if not src.last_hash:
         change.first_seen = True
@@ -172,7 +176,8 @@ class WatchService:
             title=change.title or src.title,
             price=change.price if change.price is not None else src.last_price,
             deadline=change.deadline or src.last_deadline,
-            content_hash=fingerprint_of(
+            # 用 check_source 算好的那个指纹，别在这儿重算 —— 重算容易少字段
+            content_hash=change.content_hash or fingerprint_of(
                 change.title, "", change.price, change.deadline),
             item_id=item_id,
         )

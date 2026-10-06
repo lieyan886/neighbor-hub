@@ -85,17 +85,23 @@ def test_kind_progress_returns_target(isolated_data):
 # 看板新增能力
 # ===========================================================================
 
-def test_fulfillment_rate(isolated_data):
-    """成团率：凑够目标份数的才算成团。"""
-    done = _new_item("已成团", quota=10)
+def test_fulfillment_rate(solo_data):
+    """成团率：凑够目标份数的才算成团；进行中的不进分母（v1.6.0 修正）。
+
+    旧逻辑把「刚开、还没凑够」的团也算进分母，成团率被系统性低估。
+    """
+    done = _new_item("已成团", quota=10, status=STATUS_EXPIRED)
     signup_repo.add(Signup(item_id=done.id, name="甲", qty=12))
-    half = _new_item("没成团", quota=10)
+    half = _new_item("没成团", quota=10, status=STATUS_EXPIRED)
     signup_repo.add(Signup(item_id=half.id, name="乙", qty=4))
+    live = _new_item("还在开", quota=10)
+    signup_repo.add(Signup(item_id=live.id, name="丙", qty=1))
 
     fu = stats.fulfillment()
-    assert fu["total"] >= 2
-    assert fu["formed"] >= 1
-    assert 0 < fu["rate"] <= 100
+    assert fu["total"] == 2, "分母只该是已收尾的团"
+    assert fu["formed"] == 1
+    assert fu["ongoing"] == 1
+    assert fu["rate"] == 50.0
 
 
 def test_compare_has_now_prev_delta(isolated_data):
