@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -218,7 +219,35 @@ class SettingsDialog(QDialog):
         except Exception as exc:
             warn(self, "备份失败", str(exc))
             return
-        info(self, "备份完成", f"已保存到：\n{path}")
+        # v1.8.1：备份 zip 里是全量数据库 + 设置 + 封面图，
+        # 小区名、联系方式、群昵称全在里面 —— 别随手转发到群里。
+        # （.gitignore 已挡住 exports/*.zip，不会误提交到公开仓库）
+        box = QMessageBox(self)
+        box.setWindowTitle("备份完成")
+        box.setIcon(QMessageBox.Information)
+        box.setStyleSheet(theme.QSS)
+        box.setText(f"已保存到：\n{path}")
+        box.setInformativeText(
+            "这个文件包含全部数据（含昵称、联系方式），别随手转发。")
+        open_btn = box.addButton("打开文件夹", QMessageBox.AcceptRole)
+        box.addButton("知道了", QMessageBox.RejectRole)
+        box.setDefaultButton(open_btn)
+        box.exec()
+        if box.clickedButton() is open_btn:
+            self._open_dir(path)
+
+    @staticmethod
+    def _open_dir(path: str) -> None:
+        """打开文件所在目录并选中该文件（资源管理器行为）。"""
+        try:
+            import subprocess
+
+            subprocess.Popen(
+                ["explorer", "/select,", path],
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception:
+            pass
 
     def _restore(self) -> None:
         """从备份包恢复，覆盖前会给当前数据留一份档。"""

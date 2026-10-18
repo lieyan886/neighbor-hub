@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/lieyan886/neighbor-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/lieyan886/neighbor-hub/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.8.0-blue.svg)](https://github.com/lieyan886/neighbor-hub/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.8.1-blue.svg)](https://github.com/lieyan886/neighbor-hub/releases/latest)
 
 给小区群主 / 团长用的桌面工具：**采集 → 管理 → 出图 → 发群**，一条流水线搞定社区活动、邻里拼单、周边优惠和羊毛信息的日常运营。
 
@@ -219,6 +219,7 @@ CI（GitHub Actions）在 Windows + Linux 双平台、Python 3.11 / 3.13 四组�
 
 | 版本 | 日期 | 变化 |
 |---|---|---|
+| **v1.8.1** | 2026-10-18 | **分发记录可查看**：一键推群/手动记的分发以前只写不读，分发台新增「分发记录」按钮（时间/内容/渠道/备注，只存本地）；配套把 `publish_logs.item_id` 从 `NOT NULL + CASCADE` 迁成可空 + `SET NULL`（schema v6，带老库自动迁移）—— 内容删了留痕还在，标题显示「（内容已删除）」，与监控源的 SET NULL 行为一致；**备份提示补隐私警示**：备份完成时明确提示「含全部数据别随手转发」，并加「打开文件夹」按钮（定位到文件），`.gitignore` 已挡住备份 zip 进公开仓库 |
 | **v1.8.0** | 2026-10-18 | **真实流程审计修复**：端到端跑通「建团 → 采集 → 接龙 → 文案 → 成团 → 结算 → 提货 → 看板 → 备份」全链路后修两处 —— ① 手动「+报名」给同一个人点两次会记成两条（提货清单多一行、结算多算一人、催款多发一条、看板份数虚高），与粘贴接龙的归并口径统一，写法不同记别名备查；② 分享卡片「已有 N 人报名」按记录条数显示，改用归一化去重口径；另修一个时间敏感的测试断言（「再来一团」顺延时戳），补 `tests/test_v18.py` 5 条回归 |
 | **v1.7.0** | 2026-10-06 | **价格历史**：新增 `price_history` 表（schema v5），入库 / 手动改价 / 盯梢抓到新价三条入口自动记账，看板新增「价格走势」图（y 轴自适应 + 标出高低点 + 一句人话结论），一眼看出是真降还是先涨后降；**接龙里的「我」**：「我要2份」「我不要了」自动落到设置里的署名名下，不再掉进「认不出来」；**提货清单补备注列**：打印出来的纸上终于有「要红颜不要奶油」这类要求，志愿者不用回头翻软件 |
 | **v1.6.0** | 2026-10-05 | **全量审计修复**（15 个实证问题 + 9 处打磨）：盯梢误报（指纹对比漏字段）、看板「完成 vs 目标」目标数被 JOIN 扇出放大、粘贴接龙不解析点导入无反应、导出待结清用旧快照催错人、「再来一团」复制出已过期团、确认框全写「确认删除」；采集去重落库、逾期提醒可重新触发（设置里可关）、无截止团的结算逾期也提醒、单实例保护 + 关托盘不留幽灵进程；环比口径 / 成团率把未结束团算漏 / 参与人数与同名归并同口径 / 只填日期不显示 00:00 / 备份留档改用一致性快照；另清掉死字段 `items.collected` 与占位属性 `Item.progress`，schema 升到 v4 |

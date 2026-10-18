@@ -15,7 +15,7 @@ from typing import Iterator
 from . import config
 from .models import stamp
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS items (
@@ -82,7 +82,10 @@ CREATE TABLE IF NOT EXISTS card_templates (
 
 CREATE TABLE IF NOT EXISTS publish_logs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    item_id     INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    -- v1.8.1：item_id 改成可空 + ON DELETE SET NULL。分发记录是留痕：
+    -- 内容删了历史还得在（界面显示「（内容已删除）」）。以前 NOT NULL +
+    -- CASCADE，删一条内容记录整条消失，和 watch_sources 的 SET NULL 不一致。
+    item_id     INTEGER REFERENCES items(id) ON DELETE SET NULL,
     channel     TEXT    NOT NULL DEFAULT 'wechat',
     image_path  TEXT    NOT NULL DEFAULT '',
     text        TEXT    NOT NULL DEFAULT '',
@@ -186,6 +189,7 @@ class Database:
         "cannot commit - no transaction is active"。
         """
         self.conn.executescript(SCHEMA_SQL)
+        self._migrate()
         version = self.conn.execute("PRAGMA user_version").fetchone()[0]
         if version < 1:
             self.conn.execute(
@@ -195,6 +199,40 @@ class Database:
         self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self.conn.execute(DEFAULT_TEMPLATE_SQL, {"ts": stamp()})
         self.conn.execute("DELETE FROM card_templates WHERE name = '占位'")
+
+    def _migrate(self) -> None:
+        """按 user_version 做增量迁移（SCHEMA_SQL 只能建新表，改不了老表）。"""
+        version = self.conn.execute("PRAGMA user_version").fetchone()[0]
+        if version >= 6:
+            return
+        # v1.8.1：publish_logs.item_id NOT NULL + CASCADE → 可空 + SET NULL。
+        # 留痕要熬过内容被删。用「表_info 的 notnull 标志」判断是不是旧结构，
+        # 比单纯看版本号稳（老库可能已经被人手工改过）。
+        cols = {
+            r["name"]: r
+            for r in self.conn.execute("PRAGMA table_info(publish_logs)")
+        }
+        item_col = cols.get("item_id")
+        if item_col and item_col["notnull"]:
+            self.conn.executescript("""
+                BEGIN;
+                CREATE TABLE publish_logs_new (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    item_id     INTEGER REFERENCES items(id) ON DELETE SET NULL,
+                    channel     TEXT    NOT NULL DEFAULT 'wechat',
+                    image_path  TEXT    NOT NULL DEFAULT '',
+                    text        TEXT    NOT NULL DEFAULT '',
+                    created_at  TEXT    NOT NULL DEFAULT ''
+                );
+                INSERT INTO publish_logs_new
+                    (id, item_id, channel, image_path, text, created_at)
+                    SELECT id, item_id, channel, image_path, text, created_at
+                    FROM publish_logs;
+                DROP TABLE publish_logs;
+                ALTER TABLE publish_logs_new RENAME TO publish_logs;
+                CREATE INDEX IF NOT EXISTS idx_logs_item ON publish_logs(item_id);
+                COMMIT;
+            """)
 
     # —— 事务 ——
 

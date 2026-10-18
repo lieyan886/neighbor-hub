@@ -219,7 +219,19 @@ class RenderPanel(QWidget):
         self.open_btn.setProperty("variant", "ghost")
         self.open_btn.clicked.connect(self._open_output)
         layout.addWidget(self.open_btn)
+
+        # v1.8.1：分发记录以前只写不读，想看「这条上次什么时候发的」没入口
+        self.log_btn = QPushButton("分发记录")
+        self.log_btn.setProperty("variant", "ghost")
+        self.log_btn.setToolTip("查看哪些内容在什么时间发过哪个渠道（只存本地）")
+        self.log_btn.clicked.connect(self._show_publish_log)
+        layout.addWidget(self.log_btn)
         return box
+
+    def _show_publish_log(self) -> None:
+        from ui.publish_log_dialog import PublishLogDialog
+
+        PublishLogDialog(self).exec()
 
     def _build_right(self) -> QWidget:
         box = QWidget()
