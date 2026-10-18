@@ -218,9 +218,20 @@ def test_batch_add_merges_by_normalized_name(isolated_data):
 
 def test_duplicate_groups_and_merge(isolated_data):
     """查重分组 + 合并：份数相加、结清取「都结清才算」。"""
+    from core.db import get_database
+
     it = _new_item("查重测试", quota=100)
-    a = signup_repo.add(Signup(item_id=it.id, name="张三", qty=2, settled=True))
-    b = signup_repo.add(Signup(item_id=it.id, name="3栋张三", qty=3, settled=False))
+    # v1.8.0 起 add() 自身会归并同名，造「两条不同写法」得走底层插入 ——
+    # 这也正是查重归并功能的真实场景：处理历史遗留的重复记录
+    db = get_database()
+    cur_a = db.execute(
+        "INSERT INTO signups (item_id, name, qty, settled, created_at) "
+        "VALUES (?, '张三', 2, 1, '2026-10-01 10:00:00')", (it.id,))
+    a = int(cur_a.lastrowid)
+    cur_b = db.execute(
+        "INSERT INTO signups (item_id, name, qty, settled, created_at) "
+        "VALUES (?, '3栋张三', 3, 0, '2026-10-02 10:00:00')", (it.id,))
+    b = int(cur_b.lastrowid)
 
     groups = signup_repo.duplicate_groups(it.id)
     assert len(groups) == 1 and len(groups[0]) == 2

@@ -143,7 +143,13 @@ def test_duplicate_bumps_round_and_shifts_deadline():
     old = parse_datetime(it.deadline)
     new = parse_datetime(clone.deadline)
     assert old is not None and new is not None
-    assert (new - old).days == 7, "截止日期没顺延 7 天"
+    # v1.6.0 起的规则：新一期从「今天」起算，不是拿旧截止 +7 ——
+    # 旧团若是几周前截止的，+7 天复制出来就是「已过期」，团长还得手动改。
+    # 所以断言「至少顺延 7 天，且不早于今天」。
+    # （这个用例以前写死 (new - old).days == 7，旧截止在几周前就会挂，
+    # 属于时间敏感断言。）
+    assert (new - old).days >= 7, "截止日期没顺延 7 天"
+    assert new >= datetime.now(), "新一期截止不能早于现在"
 
 
 def test_duplicate_does_not_carry_signups():

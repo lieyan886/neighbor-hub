@@ -362,7 +362,35 @@ class SignupRepository:
         return [Signup.from_row(r) for r in rows]
 
     def add(self, signup: Signup) -> int:
+        """登记一条报名。同一个人重复报会自动累加份数。
+
+        v1.8.0 修正：以前这里直接 INSERT，「+报名」按钮给同一个人点两次就
+        出现两条同名记录 —— 提货清单多印一行、结算多算一个人、催款多发一条，
+        看板份数也跟着虚高。粘贴接龙（batch_add）一直是归并的，两条路径
+        行为不一致，这里统一成同一套口径：按 _find_same 找人，找到就加份数，
+        写法不同（「张三」/「3栋张三」）把别名记进备注备查。
+        """
+        name = utils.clean_text(signup.name)
+        if not name:
+            return 0
+        exist = self._find_same(signup.item_id, name)
+        if exist:
+            db = get_database()
+            db.execute(
+                "UPDATE signups SET qty = qty + ? WHERE id = ?",
+                (signup.qty, exist["id"]),
+            )
+            # 与 batch_add 同一套别名逻辑，方便事后核对是谁的哪条
+            if exist["name"] != name:
+                old_note = exist["note"] or ""
+                if name not in old_note:
+                    merged = (f"{old_note} / {name}" if old_note
+                              else f"别名：{name}")
+                    db.execute("UPDATE signups SET note = ? WHERE id = ?",
+                               (merged.strip(" /"), exist["id"]))
+            return int(exist["id"])
         row = signup.to_row()
+        row["name"] = name
         row["created_at"] = _now()
         keys = ", ".join(row.keys())
         marks = ", ".join(f":{k}" for k in row)

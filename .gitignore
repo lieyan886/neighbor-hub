@@ -14,6 +14,9 @@ data/covers/
 
 # 运行产出：导出的 Excel 与渲染的卡片（示例卡片除外）
 exports/*.xlsx
+# 备份 zip 含全量数据库快照 + settings.json + 封面图（小区名/联系方式），
+# 绝不进版本库 —— 尤其是这个仓库是公开的
+exports/*.zip
 output/*
 !output/示例卡片.png
 

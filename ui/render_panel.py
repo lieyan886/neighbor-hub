@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from core import config
+from core import utils
 from core.models import CardTemplate, Item, kind_label
 from core.repository import items as item_repo
 from core.repository import publishes as publish_repo
@@ -329,13 +330,17 @@ class RenderPanel(QWidget):
         ctxs: dict[int, CardContext] = {}
         for it in picked:
             rows = signup_repo.list_for(it.id or 0)
+            # 人数按归一化口径去重：同一个人写法不同（「张三」/「3栋张三」）
+            # 在卡片上只能算一个人，否则「已有 N 人报名」是虚的
+            people = {utils.normalize_name(s.name) for s in rows}
+            people.discard("")
             ctxs[it.id or -1] = CardContext(
                 community_name=cfg.get("community_name", "我们小区"),
                 operator_name=cfg.get("operator_name", "团长"),
                 contact_info=cfg.get("contact_info", ""),
                 join_url=it.url,
                 done_qty=sum(float(s.qty or 0) for s in rows),
-                headcount=len(rows),
+                headcount=len(people),
             )
         return ctxs
 

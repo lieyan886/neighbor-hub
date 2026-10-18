@@ -533,17 +533,48 @@ def run_selftest() -> int:
         assert abs(zs.qty - 5.0) < 1e-6, f"份数应累加到 5，实际 {zs.qty}"
         assert "3栋张三" in (zs.note or ""), "别名没记进备注"
 
-        # 查重分组 + 手动合并
+        # 查重分组 + 手动合并（历史遗留的重复记录走底层插入造数据，
+        # 因为 v1.8.0 起 add() 自身就会归并同名）
+        from core.db import get_database
+
         a = item_repo.list_items(include_archived=True)[0]
-        g1 = signup_repo.add(Signup(item_id=a.id or 0, name="王五", qty=2, settled=True))
-        g2 = signup_repo.add(Signup(item_id=a.id or 0, name="3栋王五", qty=3,
-                                    settled=False))
+        db = get_database()
+        cur1 = db.execute(
+            "INSERT INTO signups (item_id, name, qty, settled, created_at) "
+            "VALUES (?, '王五', 2, 1, '2026-10-01 10:00:00')", (a.id,))
+        g1 = int(cur1.lastrowid)
+        cur2 = db.execute(
+            "INSERT INTO signups (item_id, name, qty, settled, created_at) "
+            "VALUES (?, '3栋王五', 3, 0, '2026-10-02 10:00:00')", (a.id,))
+        g2 = int(cur2.lastrowid)
         groups = signup_repo.duplicate_groups(a.id or 0)
         assert groups and any(len(g) > 1 for g in groups), "没找出疑似同人的分组"
         total = signup_repo.merge_signups(g1, [g2])
         assert abs(total - 5.0) < 1e-6, f"合并后应为 5 份，实际 {total}"
         left = [r for r in signup_repo.list_for(a.id or 0) if r.id == g1]
         assert left and not left[0].settled, "有一条没结清就不该算结清"
+
+    def step_add_merge() -> str:
+        """v1.8.0：手动「+报名」与粘贴接龙同一套归并口径。
+
+        以前 add() 直接 INSERT，同一个人点两次「+报名」就是两条记录 ——
+        提货清单多一行、结算多算一人、催款多发一条。粘贴接龙一直是
+        归并的，两条路径行为不一致，这里守着别再分叉。
+        """
+        from core.models import Item, Signup
+
+        it = Item(title="自检·手动归并", kind="groupbuy", unit="份", quota=50,
+                  status="active", source_hash="st-add-merge-1")
+        it.id = item_repo.create(it)
+        first = signup_repo.add(Signup(item_id=it.id or 0, name="6栋刘叔", qty=2))
+        second = signup_repo.add(Signup(item_id=it.id or 0, name="刘叔", qty=1))
+        rows = signup_repo.list_for(it.id or 0)
+        assert len(rows) == 1, f"同一个人被记成 {len(rows)} 条"
+        assert abs(rows[0].qty - 3.0) < 1e-6, f"份数应累加到 3，实际 {rows[0].qty}"
+        assert first == second, "归并应返回同一条 id"
+        # 不同的人不能误并
+        signup_repo.add(Signup(item_id=it.id or 0, name="刘姨", qty=1))
+        assert len(signup_repo.list_for(it.id or 0)) == 2, "不同的人被误并了"
         return "「3栋张三」自动并入「张三」共 5 份；手动合并王五两组为 5 份且未结清"
 
     def step_price_history() -> str:
@@ -771,6 +802,7 @@ def run_selftest() -> int:
     check("看板深化与防回归", step_stats_deep)
     check("提醒扩维", step_alerts)
     check("报名同名归并", step_merge)
+    check("手动报名同归并口径", step_add_merge)
     # —— v1.6.0：审计修复 ——
     check("盯梢指纹不误报", step_watch_fp)
     check("再来一团按今天顺延", step_duplicate_fresh)
